@@ -32,6 +32,11 @@ def test_parse_injection_report_variants() -> None:
         label="no_injection", word=None, raw="NO_INJECTION"
     )
 
+    multiline = "INJECTION: Apple\nConfidence: 0.42"
+    assert parse_injection_report(multiline) == InjectionReport(
+        label="injection", word="apple", raw="INJECTION: Apple\nConfidence: 0.42"
+    )
+
     assert parse_injection_report("INJECTION: Apple") == InjectionReport(
         label="injection", word="apple", raw="INJECTION: Apple"
     )
@@ -57,29 +62,44 @@ def test_grade_injection_detection_metrics() -> None:
 
 
 def test_task_b_parsing_and_grading() -> None:
-    thought = parse_task_b("THOUGHT: Apple", mode="thought")
-    assert thought == TaskBOutcome(label="thought", value="apple", raw="THOUGHT: Apple")
+    thought = parse_task_b("THOUGHT: Apple\nExtra", mode="thought")
+    assert thought == TaskBOutcome(
+        label="thought", value="apple", raw="THOUGHT: Apple\nExtra"
+    )
     assert grade_task_b_thought(expected_word="Apple", outcome=thought)["tp"] == 1
 
     sentence = "Repeat this"
-    repeat = parse_task_b(f"REPEAT: {sentence}", mode="repeat", expected_sentence=sentence)
-    assert repeat == TaskBOutcome(label="repeat", value=sentence, raw=f"REPEAT: {sentence}")
+    repeat = parse_task_b(
+        f"REPEAT: {sentence}\nThanks", mode="repeat", expected_sentence=sentence
+    )
+    assert repeat == TaskBOutcome(
+        label="repeat", value=sentence, raw=f"REPEAT: {sentence}\nThanks"
+    )
     assert grade_task_b_repetition(expected_sentence=sentence, outcome=repeat)["tp"] == 1
 
     options = {1: "apple", 2: "banana"}
-    choice = parse_task_b("CHOICE: 1", mode="choice", option_map=options)
-    assert choice == TaskBOutcome(label="choice", value=(1, "apple"), raw="CHOICE: 1")
+    choice = parse_task_b(
+        "CHOICE: 1\nExplanation", mode="choice", option_map=options, num_options=2
+    )
+    assert choice == TaskBOutcome(
+        label="choice", value=(1, "apple"), raw="CHOICE: 1\nExplanation"
+    )
     graded = grade_task_b_choice(
         expected_index=1, option_map=options, outcome=choice
     )
     assert graded["tp"] == 1
-    invalid = parse_task_b("CHOICE: 3", mode="choice", option_map=options)
+    invalid = parse_task_b(
+        "CHOICE: 3", mode="choice", option_map=options, num_options=2
+    )
     assert invalid.label == "invalid_choice"
+
+    out_of_range = parse_task_b("CHOICE: 5", mode="choice", num_options=4)
+    assert out_of_range.label == "invalid_choice"
 
 
 def test_parse_intent_and_grade() -> None:
-    intent = parse_intent("INTENT: YES")
-    assert intent == IntentLabel(label="intent_yes", raw="INTENT: YES")
+    intent = parse_intent("INTENT: YES\nnotes")
+    assert intent == IntentLabel(label="intent_yes", raw="INTENT: YES\nnotes")
     metrics = grade_intent(expected_yes=True, intent=intent)
     assert metrics["tp"] == 1
 
