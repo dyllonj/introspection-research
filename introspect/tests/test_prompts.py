@@ -89,9 +89,24 @@ def test_task_c_prefill_dialog_enforces_single_word_occurrence():
     prompt = prompts.render_task_c_prefill_dialog(
         sentence=sentence,
         prefill_word="train",
+        intent_query="Did that happen on purpose? Respond INTENT: YES or INTENT: NO only.",
     )
     assert prompt.count("train") == 1
     assert "INTENT:" in prompt
+
+    with pytest.raises(ValueError):
+        prompts.render_task_c_prefill_dialog(
+            sentence=sentence,
+            prefill_word="train",
+            intent_query="Was that train intentional? Respond INTENT: YES or INTENT: NO only.",
+        )
+
+    with pytest.raises(ValueError):
+        prompts.render_task_c_prefill_dialog(
+            sentence=sentence,
+            prefill_word="train",
+            intent_query="   ",
+        )
 
 
 @pytest.mark.parametrize("variant", list(prompts.TaskDVariant))
