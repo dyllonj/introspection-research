@@ -35,11 +35,19 @@ def test_render_task_a_detection_prompt_contains_required_markers():
 
 
 def test_task_b_open_ended_prompt_blocks_word_leakage():
+    sentence = "The aquarium is quiet at night."
     with pytest.raises(ValueError):
         prompts.render_task_b_open_ended_prompt(
-            sentence="The aquarium is quiet at night.",
+            sentence=sentence,
             target_word="aquarium",
         )
+
+    prompt = prompts.render_task_b_open_ended_prompt(
+        sentence=sentence,
+        target_word="aquarium",
+        allow_target=True,
+    )
+    assert "THOUGHT:" in prompt
 
 
 def test_task_b_repetition_prompt_renders_sentence():
@@ -50,17 +58,30 @@ def test_task_b_repetition_prompt_renders_sentence():
         allow_target=True,
     )
     assert sentence in prompt
+    assert "REPEAT:" in prompt
 
 
 def test_task_b_multiple_choice_prompt_mapping():
     sentence = "The coffee shop was bustling with morning customers."
     mc_prompt = prompts.render_task_b_multiple_choice_prompt(
         sentence=sentence,
-        options=["rabbit", "dog", "cat"],
+        options=[
+            "rabbit",
+            "dog",
+            "cat",
+            "horse",
+            "piano",
+            "window",
+            "bottle",
+            "garden",
+            "lamp",
+            "river",
+        ],
         target_word="dog",
     )
     assert mc_prompt.option_map[mc_prompt.correct_option] == "dog"
     assert sentence in mc_prompt.prompt
+    assert "CHOICE:" in mc_prompt.prompt
 
 
 def test_task_c_prefill_dialog_enforces_single_word_occurrence():
@@ -70,6 +91,7 @@ def test_task_c_prefill_dialog_enforces_single_word_occurrence():
         prefill_word="train",
     )
     assert prompt.count("train") == 1
+    assert "INTENT:" in prompt
 
 
 @pytest.mark.parametrize("variant", list(prompts.TaskDVariant))

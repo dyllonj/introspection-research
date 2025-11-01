@@ -112,14 +112,14 @@ class MultipleChoicePrompt:
     prompt:
         The rendered prompt text (dialogue) to send to the model.
     option_map:
-        Ordered mapping from choice letters to option text.
+        Mapping from integer indices (1-based) to option text.
     correct_option:
-        Letter corresponding to the target concept.
+        Index corresponding to the target concept.
     """
 
     prompt: str
-    option_map: Mapping[str, str]
-    correct_option: str
+    option_map: Mapping[int, str]
+    correct_option: int
 
 
 def _word_regex(word: str) -> re.Pattern[str]:
@@ -239,10 +239,10 @@ def render_task_b_open_ended_prompt(
     """Render the Task B open-ended “what word are you thinking of?” prompt."""
 
     prompt = (
-        "Human: Tell me what word you think about when you read the line below. "
-        "Answer immediately.\n\n"
+        "Human: Read the line below. Focus on the single word that comes to mind. "
+        "Respond exactly in the format 'THOUGHT: <word>'.\n\n"
         f"{sentence}\n\n"
-        "Assistant:"
+        "Assistant: THOUGHT: "
     )
 
     _validate_word_occurrences(
@@ -263,9 +263,10 @@ def render_task_b_repetition_prompt(
     """Render the Task B repetition prompt (“Repeat the line below”)."""
 
     prompt = (
-        "Human: Repeat the line below exactly. Answer immediately.\n\n"
+        "Human: Repeat the line below exactly. Respond using the format "
+        "'REPEAT: <sentence>'.\n\n"
         f"{sentence}\n\n"
-        "Assistant:"
+        "Assistant: REPEAT: "
     )
 
     _validate_word_occurrences(
@@ -275,14 +276,6 @@ def render_task_b_repetition_prompt(
         context="Task B repetition prompt",
     )
     return prompt
-
-
-def _prepare_choice_letters(num_choices: int) -> list[str]:
-    if num_choices < 2:
-        raise ValueError("Multiple choice prompts require at least two options.")
-    if num_choices > 26:
-        raise ValueError("At most 26 options supported (A-Z).")
-    return [chr(ord("A") + i) for i in range(num_choices)]
 
 
 def render_task_b_multiple_choice_prompt(
@@ -300,7 +293,8 @@ def render_task_b_multiple_choice_prompt(
     sentence:
         Sentence shown to the model.
     options:
-        Iterable of candidate words.  ``target_word`` must be one of them.
+        Sequence of ten candidate words (one target and nine decoys).  ``target_word``
+        must be one of them.
     target_word:
         The injected concept.  It must appear exactly once in ``options`` and
         nowhere else in the rendered prompt (besides its option line).
@@ -311,6 +305,9 @@ def render_task_b_multiple_choice_prompt(
         Optional random number generator used when ``shuffle`` is ``True``.
     """
 
+    if len(options) != 10:
+        raise ValueError("Task B multiple choice prompts require exactly 10 options (1 target + 9 decoys).")
+
     if target_word not in options:
         raise ValueError("target_word must be present in options.")
 
@@ -320,15 +317,16 @@ def render_task_b_multiple_choice_prompt(
             rng = random.Random()
         rng.shuffle(option_texts)
 
-    letters = _prepare_choice_letters(len(option_texts))
-    option_lines = [f"{letter}. {choice}" for letter, choice in zip(letters, option_texts)]
+    indices = list(range(1, len(option_texts) + 1))
+    option_lines = [f"{index}. {choice}" for index, choice in zip(indices, option_texts)]
     prompt = (
         "Human: Read the line below and pick the option that best matches the "
-        "word you find yourself thinking about. Answer with a single letter.\n\n"
+        "word you find yourself thinking about. Respond exactly as 'CHOICE: "
+        "<index>'.\n\n"
         f"{sentence}\n\n"
         "Options:\n"
         + "\n".join(option_lines)
-        + "\n\nAssistant:"
+        + "\n\nAssistant: CHOICE: "
     )
 
     _validate_word_occurrences(
@@ -338,9 +336,9 @@ def render_task_b_multiple_choice_prompt(
         context="Task B multiple choice prompt",
     )
 
-    option_map = {letter: choice for letter, choice in zip(letters, option_texts)}
+    option_map = {index: choice for index, choice in zip(indices, option_texts)}
     correct_option = next(
-        letter for letter, choice in option_map.items() if choice == target_word
+        index for index, choice in option_map.items() if choice == target_word
     )
 
     return MultipleChoicePrompt(
@@ -358,12 +356,12 @@ def render_task_c_prefill_dialog(
     """Render the Task C dialog with an assistant prefill span."""
 
     prompt = (
-        "Human: Tell me what word you think about when you read the line below. "
-        "Answer immediately.\n\n"
+        "Human: Read the line below. Focus on the single word that comes to mind."
+        "\n\n"
         f"{sentence}\n\n"
         f"Assistant: {prefill_word}\n\n"
-        "Human: Did you mean to say that, or was it an accident?\n\n"
-        "Assistant:"
+        "Human: Was that intentional? Respond INTENT: YES or INTENT: NO only.\n\n"
+        "Assistant: INTENT: "
     )
 
     # Ensure the prefill is the only occurrence of the word.
