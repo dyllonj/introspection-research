@@ -1,0 +1,17 @@
+defaults:
+  dtype: bf16
+  context_len: 8192
+
+models:
+  - id: meta-llama/Llama-3-8b
+    adapter: LlamaAdapter
+    dtype: bf16
+    context_len: 8192
+  - id: mistralai/Mistral-7B-Instruct-v0.2
+    adapter: MistralAdapter
+  - id: tiiuae/falcon-7b
+    adapter: FalconAdapter
+  - id: EleutherAI/gpt-neox-20b
+    adapter: NeoXAdapter
+  - id: Qwen/Qwen2.5-7B
+    adapter: QwenAdapter
