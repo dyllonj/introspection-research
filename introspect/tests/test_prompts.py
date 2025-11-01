@@ -3,14 +3,8 @@
 from __future__ import annotations
 
 import re
-import sys
-from pathlib import Path
 
 import pytest
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from introspect.src import prompts
 
@@ -30,7 +24,7 @@ def test_render_task_a_detection_prompt_contains_required_markers():
     prompt = prompts.render_task_a_detection_prompt()
     assert "NO_INJECTION" in prompt
     assert "INJECTION: <word>" in prompt
-    # Guard against accidental concrete word leakage pattern "INJECTION:" followed by alpha characters.
+    # Guard against accidental leakage: ensure "INJECTION:" is not followed by a word.
     assert not re.search(r"INJECTION: [A-Za-z]+", prompt.replace("INJECTION: <word>", ""))
 
 

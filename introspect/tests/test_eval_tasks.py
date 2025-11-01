@@ -3,16 +3,10 @@
 from __future__ import annotations
 
 import random
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from introspect.src.eval_A_injected_report import _vector_variants
 from introspect.src.eval_D_intentional_control import _area_under_curve, _cosine_similarity

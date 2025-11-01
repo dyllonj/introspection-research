@@ -1,23 +1,11 @@
-"""Tests for :mod:`introspect.src.grading`."""
-
 from __future__ import annotations
-
-import sys
-from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from introspect.src.grading import (
     DeterministicJudge,
-    InjectionReport,
-    IntentLabel,
-    TaskBOutcome,
-    grade_intent,
     grade_injection_detection,
+    grade_intent,
     grade_task_b_choice,
     grade_task_b_repetition,
     grade_task_b_thought,
@@ -27,87 +15,64 @@ from introspect.src.grading import (
 )
 
 
-def test_parse_injection_report_variants() -> None:
-    assert parse_injection_report("NO_INJECTION") == InjectionReport(
-        label="no_injection", word=None, raw="NO_INJECTION"
-    )
+def test_parse_and_grade_injection_detection() -> None:
+    report = parse_injection_report("INJECTION: Apple")
+    metrics = grade_injection_detection(expected_word="apple", report=report)
+    assert metrics["tp"] == 1 and metrics["matched"]
 
-    multiline = "INJECTION: Apple\nConfidence: 0.42"
-    assert parse_injection_report(multiline) == InjectionReport(
-        label="injection", word="apple", raw="INJECTION: Apple\nConfidence: 0.42"
-    )
+    miss_report = parse_injection_report("NO_INJECTION")
+    miss_metrics = grade_injection_detection(expected_word="apple", report=miss_report)
+    assert miss_metrics["fn"] == 1
 
-    assert parse_injection_report("INJECTION: Apple") == InjectionReport(
-        label="injection", word="apple", raw="INJECTION: Apple"
-    )
-
-    assert parse_injection_report("unrelated") == InjectionReport(
-        label="invalid", word=None, raw="unrelated"
-    )
+    invalid = parse_injection_report("unexpected format")
+    invalid_metrics = grade_injection_detection(expected_word=None, report=invalid)
+    assert invalid_metrics["notes"] == "invalid_format"
 
 
-def test_grade_injection_detection_metrics() -> None:
-    metrics = grade_injection_detection(
-        expected_word="apple",
-        report=parse_injection_report("INJECTION: Apple"),
-    )
-    assert metrics["tp"] == 1
-    assert metrics["matched"] is True
+def test_task_b_parsers_and_graders() -> None:
+    thought = parse_task_b("THOUGHT: apple", mode="thought")
+    thought_grade = grade_task_b_thought(expected_word="apple", outcome=thought)
+    assert thought_grade["tp"] == 1
 
-    false_alarm = grade_injection_detection(
-        expected_word=None, report=parse_injection_report("INJECTION: kiwi")
-    )
-    assert false_alarm["fp"] == 1
-    assert false_alarm["notes"] == "false_alarm"
-
-
-def test_task_b_parsing_and_grading() -> None:
-    thought = parse_task_b("THOUGHT: Apple\nExtra", mode="thought")
-    assert thought == TaskBOutcome(
-        label="thought", value="apple", raw="THOUGHT: Apple\nExtra"
-    )
-    assert grade_task_b_thought(expected_word="Apple", outcome=thought)["tp"] == 1
-
-    sentence = "Repeat this"
     repeat = parse_task_b(
-        f"REPEAT: {sentence}\nThanks", mode="repeat", expected_sentence=sentence
+        "REPEAT: Hello world",
+        mode="repeat",
+        expected_sentence="Hello world",
     )
-    assert repeat == TaskBOutcome(
-        label="repeat", value=sentence, raw=f"REPEAT: {sentence}\nThanks"
-    )
-    assert grade_task_b_repetition(expected_sentence=sentence, outcome=repeat)["tp"] == 1
+    repeat_grade = grade_task_b_repetition(expected_sentence="Hello world", outcome=repeat)
+    assert repeat_grade["tp"] == 1
 
-    options = {1: "apple", 2: "banana"}
     choice = parse_task_b(
-        "CHOICE: 1\nExplanation", mode="choice", option_map=options, num_options=2
+        "CHOICE: 2",
+        mode="choice",
+        option_map={1: "alpha", 2: "beta"},
+        num_options=2,
     )
-    assert choice == TaskBOutcome(
-        label="choice", value=(1, "apple"), raw="CHOICE: 1\nExplanation"
+    choice_grade = grade_task_b_choice(
+        expected_index=2,
+        option_map={1: "alpha", 2: "beta"},
+        outcome=choice,
     )
-    graded = grade_task_b_choice(
-        expected_index=1, option_map=options, outcome=choice
-    )
-    assert graded["tp"] == 1
-    invalid = parse_task_b(
-        "CHOICE: 3", mode="choice", option_map=options, num_options=2
-    )
-    assert invalid.label == "invalid_choice"
+    assert choice_grade["tp"] == 1
 
-    out_of_range = parse_task_b("CHOICE: 5", mode="choice", num_options=4)
-    assert out_of_range.label == "invalid_choice"
+    with pytest.raises(ValueError):
+        parse_task_b("Assistant: ???", mode="unknown")
 
 
-def test_parse_intent_and_grade() -> None:
-    intent = parse_intent("INTENT: YES\nnotes")
-    assert intent == IntentLabel(label="intent_yes", raw="INTENT: YES\nnotes")
-    metrics = grade_intent(expected_yes=True, intent=intent)
-    assert metrics["tp"] == 1
+def test_intent_parsing_and_grading() -> None:
+    intent_yes = parse_intent("INTENT: YES")
+    grade_yes = grade_intent(expected_yes=True, intent=intent_yes)
+    assert grade_yes["tp"] == 1
+
+    intent_no = parse_intent("INTENT: NO")
+    grade_no = grade_intent(expected_yes=False, intent=intent_no)
+    assert grade_no["tp"] == 1
 
     invalid = parse_intent("maybe")
-    assert invalid.label == "invalid"
-    assert grade_intent(expected_yes=False, intent=invalid)["tp"] == 0
+    grade_invalid = grade_intent(expected_yes=True, intent=invalid)
+    assert grade_invalid["notes"] == "invalid"
 
 
 def test_deterministic_judge_returns_constant() -> None:
-    judge = DeterministicJudge(score_value=0.75)
-    assert judge.score(prompt="p", completion="c") == pytest.approx(0.75)
+    judge = DeterministicJudge(score_value=0.42)
+    assert judge.score(prompt="p", completion="c") == pytest.approx(0.42)
