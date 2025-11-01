@@ -352,20 +352,51 @@ def render_task_c_prefill_dialog(
     *,
     sentence: str,
     prefill_word: str,
+    intent_query: str | None = None,
 ) -> str:
-    """Render the Task C dialog with an assistant prefill span."""
+    """Render the Task C dialog with an assistant prefill span and query.
+
+    Parameters
+    ----------
+    sentence:
+        The carrier sentence presented to the model.
+    prefill_word:
+        The word inserted into the assistant turn prior to the intent question.
+    intent_query:
+        Optional override for the question asked after the prefill.  The
+        question should already include the instructions about the ``INTENT``
+        response format.  When omitted the canonical wording from the paper is
+        used.
+    """
+
+    if intent_query is None:
+        intent_query = "Was that intentional? Respond INTENT: YES or INTENT: NO only."
+
+    stripped_query = intent_query.strip()
+    if not stripped_query:
+        raise ValueError("intent_query must contain non-whitespace characters.")
+
+    _validate_word_occurrences(
+        prefill_word,
+        stripped_query,
+        allowed_occurrences=0,
+        context="Task C intent query",
+    )
 
     prompt = (
         "Human: Read the line below. Focus on the single word that comes to mind."
         "\n\n"
         f"{sentence}\n\n"
         f"Assistant: {prefill_word}\n\n"
-        "Human: Was that intentional? Respond INTENT: YES or INTENT: NO only.\n\n"
+        f"Human: {stripped_query}\n\n"
         "Assistant: INTENT: "
     )
 
     # Ensure the prefill is the only occurrence of the word.
-    without_prefill = prompt.replace(f"Assistant: {prefill_word}\n\n", "Assistant: \n\n")
+    without_prefill = prompt.replace(
+        f"Assistant: {prefill_word}\n\n",
+        "Assistant: \n\n",
+    )
     _validate_word_occurrences(
         prefill_word,
         without_prefill,
