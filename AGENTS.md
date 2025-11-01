@@ -1,5 +1,7 @@
 PROMPT FOR CODEX PLANNING AGENT (to orchestrate sub‑coding agents)
 
+READ THE PAPER.MD FOR BACKGROUND FIRST
+
 Mission: Implement a zero‑fine‑tuning introspection evaluation toolkit for open‑weight LLMs. The system must:
 
 extract concept vectors per model/layer; 2) inject vectors into the residual stream during inference; 3) run four evaluation tasks (A–D); 4) grade outputs with rule‑based judges; 5) produce JSONL results and plots.
