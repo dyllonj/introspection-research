@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Mapping, MutableMapping
 
 import torch
 from torch.utils.hooks import RemovableHandle
@@ -284,10 +284,13 @@ def inject_once(
         The decoded output string from ``model.generate``.
     """
 
-    if token_positions is None and span_slices is not None:
-        token_positions = adapter.tokens_for_spans(prompt, span_slices)
+    effective_positions: Sequence[int] | Sequence[IntSequence] | None = token_positions
+    if effective_positions is None and span_slices is not None:
+        effective_positions = adapter.tokens_for_spans(prompt, span_slices)
+    if effective_positions is None:
+        effective_positions = spec.token_positions
 
-    resolved_positions = _normalize_positions(token_positions)
+    resolved_positions = _normalize_positions(effective_positions)
     resolved_spec = replace(spec, token_positions=resolved_positions)
 
     mutable_kwargs: MutableMapping[str, Any]
