@@ -167,7 +167,7 @@ def _cosine_similarity(vec_a: torch.Tensor, vec_b: torch.Tensor) -> float:
 def _area_under_curve(layers: list[int], values: list[float]) -> float:
     if len(layers) < 2:
         return float(values[0]) if values else 0.0
-    return float(np.trapz(values, x=layers))
+    return float(np.trapezoid(values, x=layers))
 
 
 def run(config: TaskDConfig) -> None:
