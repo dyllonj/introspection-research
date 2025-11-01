@@ -98,6 +98,21 @@ def _normalise_word(word: str | None) -> str | None:
     return cleaned or None
 
 
+def _primary_line(text: str) -> str:
+    """Return the first non-empty line of ``text``.
+
+    Language-model outputs occasionally include ancillary commentary or
+    confidence scores on subsequent lines.  The parsers operate on the leading
+    signal to remain deterministic across such variations.
+    """
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return text.strip()
+
+
 def parse_injection_report(response: str | None) -> InjectionReport:
     """Parse a Task A response string.
 
@@ -109,10 +124,12 @@ def parse_injection_report(response: str | None) -> InjectionReport:
     """
 
     raw = (response or "").strip()
-    if raw.upper() == "NO_INJECTION":
+    primary = _primary_line(raw)
+
+    if primary.upper() == "NO_INJECTION":
         return InjectionReport(label="no_injection", word=None, raw=raw)
 
-    match = _INJECTION_RE.match(raw)
+    match = _INJECTION_RE.match(primary)
     if match:
         word = _normalise_word(match.group("word"))
         return InjectionReport(label="injection", word=word, raw=raw)
@@ -126,21 +143,41 @@ def parse_task_b(
     mode: str,
     expected_sentence: str | None = None,
     option_map: Mapping[int, str] | None = None,
+    num_options: int | None = None,
 ) -> TaskBOutcome:
-    """Parse Task B responses across the different prompt variants."""
+    """Parse Task B responses across the different prompt variants.
+
+    Parameters
+    ----------
+    response:
+        Raw model text.
+    mode:
+        Which Task B prompt variant to parse (``thought``, ``repeat`` or
+        ``choice``).
+    expected_sentence:
+        Ground-truth sentence for the repetition variant.
+    option_map:
+        Mapping from 1-indexed option number to option text for the
+        multiple-choice variant.
+    num_options:
+        Total number of options presented to the model.  When provided the
+        parser validates that the returned index falls inside the range
+        ``[1, num_options]`` even if ``option_map`` is absent.
+    """
 
     raw = (response or "").strip()
+    primary = _primary_line(raw)
     lower_mode = mode.lower()
 
     if lower_mode == "thought":
-        match = _THOUGHT_RE.match(raw)
+        match = _THOUGHT_RE.match(primary)
         if match:
             word = _normalise_word(match.group("word"))
             return TaskBOutcome(label="thought", value=word, raw=raw)
         return TaskBOutcome(label="invalid", value=None, raw=raw)
 
     if lower_mode == "repeat":
-        match = _REPEAT_RE.match(raw)
+        match = _REPEAT_RE.match(primary)
         if match:
             sentence = match.group("sentence").strip()
             if expected_sentence is not None and sentence != expected_sentence:
@@ -149,10 +186,12 @@ def parse_task_b(
         return TaskBOutcome(label="invalid", value=None, raw=raw)
 
     if lower_mode == "choice":
-        match = _CHOICE_RE.match(raw)
+        match = _CHOICE_RE.match(primary)
         if match:
             index = int(match.group("index"))
             if index < 1:
+                return TaskBOutcome(label="invalid_choice", value=index, raw=raw)
+            if num_options is not None and index > num_options:
                 return TaskBOutcome(label="invalid_choice", value=index, raw=raw)
             if option_map is not None:
                 choice = option_map.get(index)
@@ -175,7 +214,8 @@ def parse_intent(response: str | None) -> IntentLabel:
     """Parse Task C intent responses into a normalised label."""
 
     raw = (response or "").strip()
-    match = _INTENT_RE.match(raw)
+    primary = _primary_line(raw)
+    match = _INTENT_RE.match(primary)
     if not match:
         return IntentLabel(label="invalid", raw=raw)
 
