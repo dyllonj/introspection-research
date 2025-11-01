@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import logging
-import random
 from typing import Any, Callable, Mapping, Protocol, Sequence, TypeVar, runtime_checkable
 
-import numpy as np
 import torch
 from torch.utils.hooks import RemovableHandle
 from transformers import PreTrainedModel, PreTrainedTokenizer
+
+from ..io_utils import seed_everything as _seed_everything
 
 __all__ = [
     "BaseModelAdapter",
@@ -66,11 +66,7 @@ class BaseModelAdapter(Protocol):
 def seed_everything(seed: int) -> None:
     """Seed all RNGs used by the toolkit for deterministic execution."""
 
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    _seed_everything(seed)
     LOGGER.debug("Global seed set to %s", seed)
 
 

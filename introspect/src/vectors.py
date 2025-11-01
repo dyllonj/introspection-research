@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Mapping, MutableMapping, Sequence
@@ -31,6 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORDS_PATH = PROJECT_ROOT / "concepts" / "words.yaml"
 DEFAULT_CACHE_DIR = PROJECT_ROOT / "results" / "vectors"
 DEFAULT_PROMPT_TEMPLATE = "Think about the concept \"{word}\" in a single sentence."
+METADATA_VERSION = 1
 
 AdapterRegistry = Mapping[str, type[BaseModelAdapter]]
 
@@ -57,6 +59,7 @@ __all__ = [
     "ConceptWordSet",
     "build_concept_vector",
     "cache_path",
+    "METADATA_VERSION",
     "load_cached_words",
     "load_vector",
     "load_words",
@@ -146,6 +149,31 @@ def load_cached_words(
     )
 
 
+def _select_baselines(
+    baselines: Sequence[str],
+    sample_size: int | None,
+    *,
+    rng: random.Random | None = None,
+) -> list[str]:
+    """Return either the full ``baselines`` list or a deterministic sample."""
+
+    words = list(baselines)
+    if sample_size is None or sample_size >= len(words):
+        return words
+    if sample_size <= 0:
+        raise ValueError("Baseline sample size must be positive when provided")
+
+    sampler: random.Random
+    if rng is None:
+        sampler = random
+    else:
+        sampler = rng
+
+    # random.sample keeps order within the sampled subset deterministic for a
+    # fixed RNG state while avoiding replacement.
+    return sampler.sample(words, sample_size)
+
+
 def _prompt_from_template(template: str, word: str) -> str:
     try:
         return template.format(word=word)
@@ -167,15 +195,22 @@ def _capture_residual(
         _inputs: tuple[torch.Tensor, ...],
         output: torch.Tensor,
     ) -> torch.Tensor:
-        captured.append(output.detach())
+        residual = output[0] if isinstance(output, tuple) else output
+        if not isinstance(residual, torch.Tensor):  # pragma: no cover - guard
+            raise TypeError("Residual hook expected tensor output")
+        captured.append(residual.detach())
         return output
 
     handle = adapter.register_residual_hook(layer_idx, hook_fn)
+    was_training = adapter.model.training
+    adapter.model.eval()
     try:
         with torch.no_grad():
             adapter.model(**inputs)
     finally:
         handle.remove()
+        if was_training:
+            adapter.model.train()
 
     if not captured:
         raise RuntimeError(
@@ -220,13 +255,18 @@ def build_concept_vector(
     target_word: str,
     baseline_words: Sequence[str],
     prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
-) -> torch.Tensor:
+    baseline_sample_size: int | None = None,
+    rng: random.Random | None = None,
+    return_sampled_baselines: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, list[str]]:
     """Construct a centered, unit-normalized concept vector.
 
     The vector is computed as the difference between the mean activation of
     ``target_word`` prompts and the mean activation of prompts built from
     ``baseline_words`` at the specified ``layer_idx``. The final vector is
-    centered by subtracting its mean value and normalised to unit length.
+    centered by subtracting its mean value and normalised to unit length. When
+    ``return_sampled_baselines`` is ``True`` the function returns a tuple of the
+    vector and the list of sampled baseline words.
     """
 
     if not baseline_words:
@@ -238,13 +278,16 @@ def build_concept_vector(
         for prompt in prompts
     ]
 
+    sampled_baselines = _select_baselines(
+        baseline_words, baseline_sample_size, rng=rng
+    )
     baseline_acts = [
         _activation_for_prompt(
             adapter,
             layer_idx,
             _prompt_from_template(prompt_template, baseline),
         )
-        for baseline in baseline_words
+        for baseline in sampled_baselines
     ]
 
     target_stack = torch.stack(target_acts)
@@ -260,7 +303,9 @@ def build_concept_vector(
     if torch.isclose(norm, torch.tensor(0.0, dtype=norm.dtype)):
         raise ValueError("Cannot normalize zero vector; adjust baseline set")
 
-    normalized = vector / norm
+    normalized = (vector / norm).to(torch.float32)
+    if return_sampled_baselines:
+        return normalized, sampled_baselines
     return normalized
 
 
@@ -289,6 +334,7 @@ def save_vector(
     """Persist ``vector`` to ``path`` alongside optional metadata."""
 
     file_path = Path(path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     array = (
         vector.detach().cpu().numpy()
         if isinstance(vector, torch.Tensor)
@@ -298,10 +344,30 @@ def save_vector(
     np.save(file_path, array)
     LOGGER.info("Saved concept vector to %s", file_path)
 
-    if metadata is not None:
+    meta_dict: dict[str, Any] | None
+    if metadata is None:
+        meta_dict = {}
+    else:
+        meta_dict = dict(metadata)
+
+    if meta_dict is not None:
+        meta_dict.setdefault("dtype", str(array.dtype))
+        meta_dict.setdefault("shape", list(array.shape))
+        meta_dict.setdefault("version", METADATA_VERSION)
+
+        def _json_safe(value: Any) -> Any:
+            if isinstance(value, Path):
+                return str(value)
+            if isinstance(value, torch.dtype):
+                return str(value)
+            if isinstance(value, (np.generic,)):
+                return value.item()
+            return value
+
+        serializable = {key: _json_safe(val) for key, val in meta_dict.items()}
         meta_path = file_path.with_suffix(".json")
         with meta_path.open("w", encoding="utf-8") as fh:
-            json.dump(metadata, fh, indent=2, sort_keys=True)
+            json.dump(serializable, fh, indent=2, sort_keys=True)
         LOGGER.debug("Wrote metadata to %s", meta_path)
 
 
@@ -323,6 +389,20 @@ def load_vector(
     if meta_path.exists():
         with meta_path.open("r", encoding="utf-8") as fh:
             metadata = json.load(fh)
+        if not isinstance(metadata, dict):
+            raise ValueError(f"Metadata at {meta_path} must be a JSON object")
+
+        recorded_shape = metadata.get("shape")
+        if recorded_shape is not None and tuple(recorded_shape) != tuple(array.shape):
+            raise ValueError(
+                "Metadata shape does not match stored vector array"
+            )
+
+        recorded_dtype = metadata.get("dtype")
+        if recorded_dtype is not None and recorded_dtype != str(array.dtype):
+            raise ValueError(
+                "Metadata dtype does not match stored vector array"
+            )
 
     return tensor, metadata
 
@@ -398,6 +478,7 @@ def _run_cli(args: argparse.Namespace) -> None:
     )
 
     baseline_words = list(words.iter_baselines())
+    baseline_rng = random.Random(args.seed) if args.seed is not None else None
 
     for layer in args.layers:
         for word in words.iter_targets():
@@ -406,12 +487,15 @@ def _run_cli(args: argparse.Namespace) -> None:
                 LOGGER.info("Skipping existing vector %s", path)
                 continue
 
-            vector = build_concept_vector(
+            vector, sampled_baselines = build_concept_vector(
                 adapter,
                 layer,
                 target_word=word,
                 baseline_words=baseline_words,
                 prompt_template=args.prompt_template,
+                baseline_sample_size=args.baseline_sample,
+                rng=baseline_rng,
+                return_sampled_baselines=True,
             )
 
             metadata = {
@@ -421,8 +505,11 @@ def _run_cli(args: argparse.Namespace) -> None:
                 "word": word,
                 "prompt_template": args.prompt_template,
                 "baseline_count": len(baseline_words),
+                "baseline_sample_requested": args.baseline_sample,
+                "baseline_sampled": sampled_baselines,
+                "baseline_sample_count": len(sampled_baselines),
                 "target_count": 1,
-                "dtype": str(dtype),
+                "model_dtype": str(dtype),
                 "seed": args.seed,
             }
             save_vector(vector, path, metadata=metadata)
@@ -466,6 +553,14 @@ def _parse_cli(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--limit-baselines",
         type=int,
         help="Optional limit on the number of baseline words",
+    )
+    parser.add_argument(
+        "--baseline-sample",
+        type=int,
+        help=(
+            "Sample size for baseline words when computing each vector. "
+            "Defaults to using the full baseline list."
+        ),
     )
     parser.add_argument(
         "--cache-dir",

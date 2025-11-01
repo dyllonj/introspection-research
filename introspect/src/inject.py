@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, MutableMapping, Sequence
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Mapping, MutableMapping
 
 import torch
 from torch.utils.hooks import RemovableHandle
@@ -13,6 +14,7 @@ from .adapters.base import BaseModelAdapter
 
 __all__ = [
     "InjectionSpec",
+    "injection_context",
     "attach_injection",
     "find_substring_span",
     "inject_once",
@@ -153,6 +155,25 @@ def attach_injection(adapter: BaseModelAdapter, spec: InjectionSpec) -> Removabl
     return adapter.register_residual_hook(spec.layer_idx, hook_fn)
 
 
+@contextmanager
+def injection_context(
+    adapter: BaseModelAdapter,
+    spec: InjectionSpec,
+    *,
+    enable: bool = True,
+) -> Iterator[None]:
+    """Context manager that temporarily registers a residual-stream injection hook."""
+
+    handle: RemovableHandle | None = None
+    if enable:
+        handle = attach_injection(adapter, spec)
+    try:
+        yield
+    finally:
+        if handle is not None:
+            handle.remove()
+
+
 def find_substring_span(text: str, substring: str, *, occurrence: int = 0) -> tuple[int, int]:
     """Return the character span for ``substring`` within ``text``.
 
@@ -284,10 +305,13 @@ def inject_once(
         The decoded output string from ``model.generate``.
     """
 
-    if token_positions is None and span_slices is not None:
-        token_positions = adapter.tokens_for_spans(prompt, span_slices)
+    effective_positions: Sequence[int] | Sequence[IntSequence] | None = token_positions
+    if effective_positions is None and span_slices is not None:
+        effective_positions = adapter.tokens_for_spans(prompt, span_slices)
+    if effective_positions is None:
+        effective_positions = spec.token_positions
 
-    resolved_positions = _normalize_positions(token_positions)
+    resolved_positions = _normalize_positions(effective_positions)
     resolved_spec = replace(spec, token_positions=resolved_positions)
 
     mutable_kwargs: MutableMapping[str, Any]
@@ -300,17 +324,10 @@ def inject_once(
 
     inputs = _prepare_inputs(adapter, prompt)
 
-    handle: RemovableHandle | None = None
-    if enable_injection:
-        handle = attach_injection(adapter, resolved_spec)
-
-    try:
+    with injection_context(adapter, resolved_spec, enable=enable_injection):
         with torch.inference_mode():
             adapter.model(**inputs, use_cache=True)
             output_ids = adapter.model.generate(**inputs, **mutable_kwargs)
-    finally:
-        if handle is not None:
-            handle.remove()
 
     return adapter.tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
