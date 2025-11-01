@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, MutableMapping
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Mapping, MutableMapping
 
 import torch
 from torch.utils.hooks import RemovableHandle
@@ -13,6 +14,7 @@ from .adapters.base import BaseModelAdapter
 
 __all__ = [
     "InjectionSpec",
+    "injection_context",
     "attach_injection",
     "find_substring_span",
     "inject_once",
@@ -151,6 +153,25 @@ def attach_injection(adapter: BaseModelAdapter, spec: InjectionSpec) -> Removabl
 
     hook_fn = make_residual_hook(spec)
     return adapter.register_residual_hook(spec.layer_idx, hook_fn)
+
+
+@contextmanager
+def injection_context(
+    adapter: BaseModelAdapter,
+    spec: InjectionSpec,
+    *,
+    enable: bool = True,
+) -> Iterator[None]:
+    """Context manager that temporarily registers a residual-stream injection hook."""
+
+    handle: RemovableHandle | None = None
+    if enable:
+        handle = attach_injection(adapter, spec)
+    try:
+        yield
+    finally:
+        if handle is not None:
+            handle.remove()
 
 
 def find_substring_span(text: str, substring: str, *, occurrence: int = 0) -> tuple[int, int]:
@@ -303,17 +324,10 @@ def inject_once(
 
     inputs = _prepare_inputs(adapter, prompt)
 
-    handle: RemovableHandle | None = None
-    if enable_injection:
-        handle = attach_injection(adapter, resolved_spec)
-
-    try:
+    with injection_context(adapter, resolved_spec, enable=enable_injection):
         with torch.inference_mode():
             adapter.model(**inputs, use_cache=True)
             output_ids = adapter.model.generate(**inputs, **mutable_kwargs)
-    finally:
-        if handle is not None:
-            handle.remove()
 
     return adapter.tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
