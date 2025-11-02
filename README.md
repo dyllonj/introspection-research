@@ -114,6 +114,13 @@ python -m introspect.src.sweep \
   --task-d-concepts 20 \
   --run-plots
 # → writes per-model task outputs beneath results/<model_slug>/ and saves plots/<...>.png.
+
+# 7) Normalise legacy results layout (file operations only)
+python -m introspect.src.tools.normalise_results \
+  --source introspect/results \
+  --dest introspect/results
+# → moves each task_*.jsonl under results/<model_slug>/ without touching cached vectors;
+#   no GPU context is required.
 ```
 
 ## Jupyter runbook (GPU servers)
