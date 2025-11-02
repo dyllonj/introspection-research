@@ -123,6 +123,63 @@ python -m introspect.src.tools.normalise_results \
 #   no GPU context is required.
 ```
 
+## Results post-processing (CPU)
+These maintenance utilities operate entirely on the filesystem and cached JSONL tables—no GPU
+session or model execution is needed. Run them from the repository root after evaluation runs
+complete so reviewers can explore metrics and plots quickly.
+
+1. **Normalise per-model directories.** Ensure legacy task outputs are grouped by model slug
+   before any downstream filtering:
+
+   ```bash
+   python -m introspect.src.tools.normalise_results \
+     --source introspect/results \
+     --dest introspect/results
+   ```
+
+   The command only moves/copies `task_*.jsonl` files. Cached concept vectors in
+   `introspect/results/vectors/<model_slug>/` are left untouched so repeated runs never trigger
+   recomputation.
+
+2. **Review data-quality flags.** Summarise `grading.notes` annotations (e.g. `invalid`,
+   `invalid_format`) before pruning records:
+
+   ```bash
+   python -m introspect.src.analysis.data_quality \
+     --results-root introspect/results \
+     --format table
+   ```
+
+   Use the output to decide which notes to drop in the next step.
+
+3. **Regenerate filtered metrics and plots.** Invoke the post-processing CLI to remove noisy
+   records, rebuild aggregate tables, and refresh visualisations:
+
+   ```bash
+   python -m introspect.src.tools.postprocess \
+     --results-root introspect/results \
+     --drop-notes invalid invalid_format
+   ```
+
+   The utility writes cleaned JSONL/CSV tables under each model slug’s
+   `postprocessed/` directory and reuses the filtered data when regenerating plots. Concept vector
+   caches continue to be resolved from `results/vectors/<model_slug>/`, avoiding redundant
+   extraction work.
+
+### Tooling quick reference
+The dedicated `introspect/src/tools/` directory hosts the CPU-only helper CLIs used during
+post-processing:
+
+- `python -m introspect.src.tools.normalise_results` — file mover/copy utility with
+  `--copy`, `--overwrite`, and `--verbose` flags for tailoring how `task_*.jsonl` files are grouped
+  by model slug.
+- `python -m introspect.src.analysis.data_quality` — summarises `grading.notes` counts per task and
+  mode; accepts `--results-root` and `--format {table,csv}` to control the output destination and
+  presentation.
+- `python -m introspect.src.tools.postprocess` — filters rows based on `grading.notes`, rebuilds
+  metrics tables, and calls the plotting pipeline. Key flags include `--results-root`, optional
+  repeated `--drop-notes` values, and `--verbose` for detailed logging.
+
 ## Jupyter runbook (GPU servers)
 Use the notebook at `notebooks/PrimeIntellect_Runbook.ipynb` to run the full pipeline on a GPU box:
 
