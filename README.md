@@ -116,6 +116,16 @@ python -m introspect.src.sweep \
 # → writes per-model task outputs beneath results/<model_slug>/ and saves plots/<...>.png.
 ```
 
+## Jupyter runbook (GPU servers)
+Use the notebook at `notebooks/PrimeIntellect_Runbook.ipynb` to run the full pipeline on a GPU box:
+
+- Installs the package in editable mode (optional if preinstalled).
+- Detects GPU and selects `bf16` when supported, else `fp16` (CPU falls back to `fp32`).
+- Builds concept vectors and executes Tasks A–D with adjustable layer/alpha/trial counts.
+- Optionally triggers multi-model sweeps and regenerates plots from existing JSONL logs.
+
+Open the notebook in JupyterLab/VS Code, adjust the model IDs and counts to match your VRAM, and run cells top to bottom. For private models, export `HUGGING_FACE_HUB_TOKEN` in the environment before starting the kernel.
+
 ## Plot review
 Regenerate plots from existing JSONL logs by reusing the sweep CLI in plot-only mode:
 ```bash
