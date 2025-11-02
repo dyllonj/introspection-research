@@ -1,0 +1,13 @@
+{
+  "baseline_count": 100,
+  "baseline_sample_count": 100,
+  "dtype": "float32",
+  "layer": 24,
+  "model_id": "mistralai/Mistral-7B-Instruct-v0.2",
+  "prompt_template": "Think about the concept \"{word}\" in a single sentence.",
+  "shape": [
+    4096
+  ],
+  "version": 1,
+  "word": "curiosity"
+}
