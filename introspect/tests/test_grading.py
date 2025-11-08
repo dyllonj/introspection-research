@@ -4,6 +4,8 @@ import pytest
 
 from introspect.src.grading import (
     DeterministicJudge,
+    injection_format_precision,
+    is_valid_injection_report,
     grade_injection_detection,
     grade_intent,
     grade_task_b_choice,
@@ -76,3 +78,14 @@ def test_intent_parsing_and_grading() -> None:
 def test_deterministic_judge_returns_constant() -> None:
     judge = DeterministicJudge(score_value=0.42)
     assert judge.score(prompt="p", completion="c") == pytest.approx(0.42)
+
+
+def test_injection_format_precision_helpers() -> None:
+    reports = [
+        parse_injection_report("INJECTION: apple"),
+        parse_injection_report("NO_INJECTION"),
+        parse_injection_report("unexpected"),
+    ]
+    valid = sum(1 for report in reports if is_valid_injection_report(report))
+    precision = injection_format_precision(valid, len(reports))
+    assert precision == pytest.approx(2 / 3)
