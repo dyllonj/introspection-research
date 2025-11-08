@@ -11,6 +11,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, P
 from transformers.utils import ModelOutput
 
 from .base import DeviceMap, HookFn, SpanSlice, seed_everything, select_device_map, select_dtype
+from ..generation import (
+    apply_generation_defaults,
+    decode_generated_tokens,
+    prepare_generation_inputs,
+)
 
 __all__ = ["MistralAdapter"]
 
@@ -123,22 +128,16 @@ class MistralAdapter:
         return list(dict.fromkeys(selected))
 
     def generate(self, prompt: str, /, **gen_kwargs: Any) -> str:
-        defaults: dict[str, Any] = {
-            "max_new_tokens": 128,
-            "temperature": 0.0,
-            "top_p": 1.0,
-            "top_k": 0,
-            "do_sample": False,
-            "num_beams": 1,
-        }
-        for key, value in defaults.items():
-            gen_kwargs.setdefault(key, value)
-
-        inputs = self.tokenizer(prompt, return_tensors="pt")
-        device = next(self.model.parameters()).device
-        inputs = {name: tensor.to(device) for name, tensor in inputs.items()}
+        tensor_inputs, prompt_len = prepare_generation_inputs(self, prompt)
+        kwargs = dict(gen_kwargs)
+        stop_sequences = apply_generation_defaults(self, kwargs)
 
         with torch.no_grad():
-            output_ids = self.model.generate(**inputs, **gen_kwargs)
+            output_ids = self.model.generate(**tensor_inputs, **kwargs)
 
-        return self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
+        return decode_generated_tokens(
+            self,
+            output_ids,
+            prompt_len,
+            stop_sequences=stop_sequences,
+        )

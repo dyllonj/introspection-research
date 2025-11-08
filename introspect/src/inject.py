@@ -11,21 +11,34 @@ import torch
 from torch.utils.hooks import RemovableHandle
 
 from .adapters.base import BaseModelAdapter
+from .generation import (
+    DEFAULT_GENERATION_KWARGS,
+    DEFAULT_STOP_SEQUENCES,
+    apply_generation_defaults,
+    decode_generated_tokens,
+    prepare_generation_inputs,
+    trim_stop_sequences,
+)
 
 __all__ = [
+    "DEFAULT_GENERATION_KWARGS",
+    "DEFAULT_STOP_SEQUENCES",
     "InjectionSpec",
+    "apply_generation_defaults",
+    "decode_generated_tokens",
     "injection_context",
     "attach_injection",
     "find_substring_span",
     "inject_once",
+    "prepare_generation_inputs",
     "make_residual_hook",
     "token_positions_from_spans",
     "token_positions_for_substring",
+    "trim_stop_sequences",
 ]
 
 
 IntSequence = Sequence[int]
-
 
 @dataclass(frozen=True)
 class InjectionSpec:
@@ -228,34 +241,6 @@ def token_positions_for_substring(
     return token_positions_from_spans(adapter, text, [span])
 
 
-def _prepare_inputs(adapter: BaseModelAdapter, prompt: str) -> dict[str, torch.Tensor]:
-    """Tokenize ``prompt`` and move tensors onto the model device."""
-
-    tokenizer_inputs = adapter.tokenizer(prompt, return_tensors="pt")
-    device = next(adapter.model.parameters()).device
-    tensor_inputs: dict[str, torch.Tensor] = {}
-    for name, value in tokenizer_inputs.items():
-        if isinstance(value, torch.Tensor):
-            tensor_inputs[name] = value.to(device)
-    return tensor_inputs
-
-
-def _apply_generation_defaults(gen_kwargs: MutableMapping[str, Any]) -> None:
-    """Populate deterministic generation defaults where not already supplied."""
-
-    defaults: Mapping[str, Any] = {
-        "max_new_tokens": 128,
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "top_k": 0,
-        "do_sample": False,
-        "num_beams": 1,
-        "use_cache": True,
-    }
-    for key, value in defaults.items():
-        gen_kwargs.setdefault(key, value)
-
-
 def _normalize_positions(
     token_positions: Sequence[int] | Sequence[IntSequence] | None,
 ) -> Sequence[int] | Sequence[IntSequence]:
@@ -320,14 +305,19 @@ def inject_once(
     else:
         mutable_kwargs = dict(gen_kwargs)
 
-    _apply_generation_defaults(mutable_kwargs)
+    stop_sequences = apply_generation_defaults(adapter, mutable_kwargs)
 
-    inputs = _prepare_inputs(adapter, prompt)
+    inputs, prompt_len = prepare_generation_inputs(adapter, prompt)
 
     with injection_context(adapter, resolved_spec, enable=enable_injection):
         with torch.inference_mode():
             adapter.model(**inputs, use_cache=True)
             output_ids = adapter.model.generate(**inputs, **mutable_kwargs)
 
-    return adapter.tokenizer.decode(output_ids[0], skip_special_tokens=True)
+    return decode_generated_tokens(
+        adapter,
+        output_ids,
+        prompt_len,
+        stop_sequences=stop_sequences,
+    )
 

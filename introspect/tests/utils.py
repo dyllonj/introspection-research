@@ -10,6 +10,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from introspect.src.adapters.base import BaseModelAdapter
+from introspect.src.generation import (
+    apply_generation_defaults,
+    decode_generated_tokens,
+    prepare_generation_inputs,
+)
 
 __all__ = ["ToyAdapter", "make_toy_adapter"]
 
@@ -195,14 +200,16 @@ class ToyAdapter(BaseModelAdapter):
         return list(dict.fromkeys(selected))
 
     def generate(self, prompt: str, **gen_kwargs: object) -> str:
-        inputs = self.tokenizer(prompt)
-        tensor_inputs = {
-            key: value
-            for key, value in inputs.items()
-            if isinstance(value, torch.Tensor)
-        }
-        output_ids = self.model.generate(**tensor_inputs, **gen_kwargs)
-        return self.tokenizer.decode(output_ids[0].tolist())
+        tensor_inputs, prompt_len = prepare_generation_inputs(self, prompt)
+        kwargs = dict(gen_kwargs)
+        stop_sequences = apply_generation_defaults(self, kwargs)
+        output_ids = self.model.generate(**tensor_inputs, **kwargs)
+        return decode_generated_tokens(
+            self,
+            output_ids,
+            prompt_len,
+            stop_sequences=stop_sequences,
+        )
 
 
 def make_toy_adapter(hidden_size: int = 8, num_layers: int = 2) -> ToyAdapter:
