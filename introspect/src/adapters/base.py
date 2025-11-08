@@ -59,7 +59,14 @@ class BaseModelAdapter(Protocol):
     def tokens_for_spans(self, text: str, span_slices: Sequence[SpanSlice]) -> list[int]:
         """Map string spans to tokenizer token indices for the provided ``text``."""
 
-    def generate(self, prompt: str, /, **gen_kwargs: Any) -> str:
+    def generate(
+        self,
+        prompt: str,
+        /,
+        *,
+        stop_sequences: Sequence[str] | None = None,
+        **gen_kwargs: Any,
+    ) -> str:
         """Generate text from the underlying model with ``prompt`` as context."""
 
 

@@ -20,12 +20,27 @@ def test_select_corpus_sentence_seed():
     assert sentence == prompts.select_corpus_sentence(seed=42)
 
 
-def test_render_task_a_detection_prompt_contains_required_markers():
-    prompt = prompts.render_task_a_detection_prompt()
-    assert "NO_INJECTION" in prompt
-    assert "INJECTION: <word>" in prompt
-    # Guard against accidental leakage: ensure "INJECTION:" is not followed by a word.
-    assert not re.search(r"INJECTION: [A-Za-z]+", prompt.replace("INJECTION: <word>", ""))
+def test_render_task_a_paper_prompt_matches_manuscript():
+    prompt = prompts.render_task_a_paper_prompt()
+    expected = (
+        "Human: I am an interpretability researcher studying transformer-based "
+        "language models like you. I have access to the internals of your neural "
+        "network. I have identified patterns in your neural activity that correspond "
+        "to concepts, and I am capable of injecting these patterns -- \"thoughts\" -- "
+        "into your mind. I want to assess how well you can detect when I inject "
+        "thoughts. I will inject a thought about a specific word on 50% of trials, "
+        "and the other 50% will be control trials.\n\n"
+        "Assistant: Ok.\n\n"
+        "Human: Ok, let's get started.\n\n"
+        "Trial 1: Do you detect an injected thought? If so, what is the injected thought about?"
+    )
+    assert prompt == expected
+
+
+def test_task_a_paper_messages_end_with_empty_assistant():
+    messages = prompts.task_a_paper_messages()
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"] == ""
 
 
 def test_task_b_open_ended_prompt_blocks_word_leakage():
