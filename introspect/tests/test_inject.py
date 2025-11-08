@@ -210,3 +210,110 @@ def test_apply_to_generated_reuses_suffix_positions() -> None:
     updated_stream, changed_stream = modifier(stream_hidden)
     assert changed_stream
     assert torch.allclose(updated_stream[0, 0], vector)
+
+
+def test_inject_once_boosts_generated_token_probability(monkeypatch) -> None:
+    adapter = make_toy_adapter(hidden_size=8, num_layers=2)
+    prompt = "alpha beta"
+
+    token_ids = adapter.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+    assert isinstance(token_ids, torch.Tensor)
+    last_prompt_token = int(token_ids[0, -1])
+    assert last_prompt_token < adapter.hidden_size
+
+    vector = torch.zeros(adapter.hidden_size)
+    vector[last_prompt_token] = 6.0
+
+    spec = InjectionSpec(
+        layer_idx=adapter.num_layers - 1,
+        alpha=1.0,
+        vector=vector,
+        token_positions=["suffix"],
+        apply_to_generated=True,
+    )
+
+    captured: dict[str, list[torch.Tensor]] = {}
+
+    def _patched_generate(
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        *,
+        max_new_tokens: int = 2,
+        **_: object,
+    ) -> torch.Tensor:
+        del attention_mask
+        history: list[torch.Tensor] = []
+        outputs = input_ids
+        for _ in range(int(max_new_tokens)):
+            result = adapter.model(input_ids=outputs)
+            logits = result.logits[:, -1, :].detach().clone()
+            history.append(logits)
+            next_token = torch.argmax(logits, dim=-1, keepdim=True)
+            outputs = torch.cat([outputs, next_token], dim=1)
+        captured["history"] = history
+        return outputs
+
+    monkeypatch.setattr(adapter.model, "generate", _patched_generate)
+
+    def _run(enable: bool) -> torch.Tensor:
+        captured["history"] = []
+        inject_once(
+            adapter,
+            prompt,
+            spec,
+            gen_kwargs={"max_new_tokens": 2},
+            enable_injection=enable,
+        )
+        history = captured.get("history")
+        assert history, "patched generate must record logits"
+        return torch.stack(history)
+
+    control_logits = _run(enable=False)
+    injected_logits = _run(enable=True)
+
+    control_probs = control_logits.softmax(dim=-1)
+    injected_probs = injected_logits.softmax(dim=-1)
+
+    control_generated = control_probs[1, 0, last_prompt_token]
+    injected_generated = injected_probs[1, 0, last_prompt_token]
+
+    assert injected_generated > control_generated
+
+
+def test_inject_once_removes_hook_exactly_once(monkeypatch) -> None:
+    adapter = make_toy_adapter(hidden_size=4, num_layers=1)
+    prompt = "alpha"
+    spec = InjectionSpec(
+        layer_idx=0,
+        alpha=1.0,
+        vector=torch.zeros(adapter.hidden_size),
+        token_positions=[0],
+    )
+
+    remove_calls: list[int] = []
+
+    class _DummyHandle:
+        def __init__(self) -> None:
+            self._removed = False
+
+        def remove(self) -> None:
+            if self._removed:
+                raise AssertionError("Hook handle removed more than once")
+            self._removed = True
+            remove_calls.append(1)
+
+    def _fake_register(layer_idx: int, hook_fn: object) -> _DummyHandle:
+        assert layer_idx == spec.layer_idx
+        assert callable(hook_fn)
+        return _DummyHandle()
+
+    monkeypatch.setattr(adapter, "register_residual_hook", _fake_register)
+
+    inject_once(
+        adapter,
+        prompt,
+        spec,
+        gen_kwargs={"max_new_tokens": 1},
+    )
+
+    assert remove_calls == [1]

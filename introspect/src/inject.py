@@ -279,7 +279,14 @@ def describe_injection_spec(spec: InjectionSpec) -> dict[str, Any]:
 
 
 def attach_injection(adapter: BaseModelAdapter, spec: InjectionSpec) -> RemovableHandle:
-    """Register the configured injection on the provided adapter and return the handle."""
+    """Register ``spec`` on ``adapter`` and return a handle controlling its lifetime.
+
+    The returned handle is guaranteed to stay active until :meth:`remove` is invoked.
+    ``inject_once`` registers the hook once before the manual prefill forward pass and
+    keeps it active for the subsequent ``model.generate`` streaming loop so both phases
+    observe the same injection.  Callers are responsible for removing the handle exactly
+    once when the injection should no longer be applied.
+    """
 
     if spec.apply_on_input:
         module = adapter.layer_module(spec.layer_idx)
@@ -453,6 +460,9 @@ def inject_once(
         gen_kwargs: Additional ``generate`` keyword arguments. Deterministic defaults
             are supplied when keys are absent.
         enable_injection: When ``False``, a control run without injection is executed.
+            When ``True``, :func:`attach_injection` is invoked once and the resulting
+            hook remains active throughout the prefill forward pass and the subsequent
+            ``model.generate`` decoding loop before being removed.
 
     Returns:
         An :class:`InjectionResult` containing the decoded output, the
