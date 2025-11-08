@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import torch
 
-from introspect.src.inject import InjectionSpec, inject_once, injection_context
+from introspect.src.inject import (
+    InjectionSpec,
+    _build_modifier,
+    describe_injection_spec,
+    inject_once,
+    injection_context,
+    token_positions_after,
+)
+from introspect.src.prompts import render_task_a_detection_prompt
 from introspect.tests.utils import make_toy_adapter
 
 
@@ -109,5 +117,96 @@ def test_inject_once_decodes_new_tokens_and_applies_stops(monkeypatch) -> None:
     assert result.injection_spec["alpha"] == 1.0
     assert result.injection_spec["token_positions"] == [0]
     assert result.injection_spec["apply_on_input"] is False
+    assert result.injection_spec["apply_to_generated"] is False
     assert result.injection_spec["vector_dim"] == adapter.hidden_size
     assert result.injection_spec["vector_norm"] == 0.0
+
+
+def test_token_positions_after_task_a_prompt_suffix_range() -> None:
+    adapter = make_toy_adapter(hidden_size=4, num_layers=1)
+    prompt = render_task_a_detection_prompt()
+    marker = "Trial 1:"
+
+    positions = token_positions_after(adapter, prompt, marker)
+
+    marker_index = prompt.index(marker)
+    newline_index = prompt.rfind("\n", 0, marker_index)
+    span_start = newline_index + 1 if newline_index != -1 else 0
+    expected = adapter.tokens_for_spans(prompt, [(span_start, len(prompt))])
+
+    assert positions == expected
+
+    token_ids, offsets = adapter.tokenizer.encode_with_offsets(prompt)
+    del token_ids
+    first_span = offsets[positions[0]]
+    assert prompt[first_span[0] : first_span[1]].lower().startswith("trial")
+
+
+def test_suffix_sentinel_injects_prefill_and_generated_tokens() -> None:
+    adapter = make_toy_adapter(hidden_size=6, num_layers=1)
+    vector = torch.zeros(adapter.hidden_size)
+    vector[0] = 3.0
+    spec = InjectionSpec(
+        layer_idx=0,
+        alpha=1.0,
+        vector=vector,
+        token_positions=[0, "suffix"],
+    )
+
+    modifier = _build_modifier(spec)
+
+    prefill_hidden = torch.zeros((1, 5, adapter.hidden_size))
+    updated_prefill, changed_prefill = modifier(prefill_hidden)
+    assert changed_prefill
+    assert torch.allclose(updated_prefill[0, 0], vector)
+    assert torch.allclose(updated_prefill[0, 4], vector)
+    assert torch.allclose(updated_prefill[0, 1], torch.zeros_like(vector))
+
+    stream_hidden = torch.zeros((1, 1, adapter.hidden_size))
+    updated_stream, changed_stream = modifier(stream_hidden)
+    assert changed_stream
+    assert torch.allclose(updated_stream[0, 0], vector)
+
+
+def test_describe_injection_spec_serializes_suffix() -> None:
+    vector = torch.ones(4)
+    spec = InjectionSpec(
+        layer_idx=1,
+        alpha=0.5,
+        vector=vector,
+        token_positions=[-1],
+        apply_on_input=True,
+        apply_to_generated=True,
+    )
+
+    metadata = describe_injection_spec(spec)
+
+    assert metadata["token_positions"] == ["suffix"]
+    assert metadata["apply_on_input"] is True
+    assert metadata["apply_to_generated"] is True
+
+
+def test_apply_to_generated_reuses_suffix_positions() -> None:
+    adapter = make_toy_adapter(hidden_size=5, num_layers=1)
+    vector = torch.zeros(adapter.hidden_size)
+    vector[1] = 2.5
+    spec = InjectionSpec(
+        layer_idx=0,
+        alpha=1.0,
+        vector=vector,
+        token_positions=[1, 2, 3],
+        apply_to_generated=True,
+    )
+
+    modifier = _build_modifier(spec)
+
+    prefill_hidden = torch.zeros((1, 6, adapter.hidden_size))
+    updated_prefill, changed_prefill = modifier(prefill_hidden)
+    assert changed_prefill
+    for index in (1, 2, 3):
+        assert torch.allclose(updated_prefill[0, index], vector)
+
+    stream_hidden = torch.zeros((1, 1, adapter.hidden_size))
+    updated_stream, changed_stream = modifier(stream_hidden)
+    assert changed_stream
+    assert torch.allclose(updated_stream[0, 0], vector)
