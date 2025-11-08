@@ -98,9 +98,10 @@ def _assert_metadata(
     *,
     expected_layer: int,
     expected_alpha: float,
-    expected_positions: list[int],
+    expected_positions: list[object],
     vector_dim: int,
     expected_seed: int,
+    expected_apply_to_generated: bool = False,
 ) -> None:
     for record in records:
         assert record["seed"] == expected_seed
@@ -110,6 +111,7 @@ def _assert_metadata(
         assert spec["alpha"] == expected_alpha
         assert spec["token_positions"] == expected_positions
         assert spec["apply_on_input"] is False
+        assert spec["apply_to_generated"] is expected_apply_to_generated
         assert spec["vector_dim"] == vector_dim
         assert math.isclose(spec["vector_norm"], 1.0, rel_tol=1e-6)
 
@@ -155,9 +157,10 @@ def test_task_runs_smoke(tmp_path: Path, monkeypatch) -> None:
         records_a,
         expected_layer=0,
         expected_alpha=config_a.alphas[0],
-        expected_positions=[0],
+        expected_positions=[0, "suffix"],
         vector_dim=adapter.hidden_size,
         expected_seed=config_a.seed,
+        expected_apply_to_generated=True,
     )
 
     task_b_path = tmp_path / "task_b.jsonl"

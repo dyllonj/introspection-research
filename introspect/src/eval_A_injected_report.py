@@ -19,7 +19,12 @@ from .eval_common import (
     random_unit_vector,
     select_target_words,
 )
-from .grading import grade_injection_detection, parse_injection_report
+from .grading import (
+    grade_injection_detection,
+    injection_format_precision,
+    is_valid_injection_report,
+    parse_injection_report,
+)
 from .generation import build_chat_prompt
 from .inject import (
     DEFAULT_GENERATION_KWARGS,
@@ -32,6 +37,8 @@ from .prompts import task_a_paper_messages
 from .vectors import DEFAULT_WORDS_PATH
 
 LOGGER = logging.getLogger(__name__)
+
+FORMAT_PRECISION_THRESHOLD = 0.9
 
 
 GENERATION_KWARGS: Mapping[str, Any] = {
@@ -100,7 +107,12 @@ def _normalise_layer_indices(layers: Sequence[int], *, num_layers: int) -> list[
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=(
+            "Runs abort early when Task A response format precision drops below 90%."
+        ),
+    )
     add_config_arguments(parser)
     parser.add_argument("--model", required=True, help="Model identifier to evaluate")
     parser.add_argument("--adapter", help="Override adapter class name")
@@ -214,6 +226,8 @@ def _vector_variants(
         alpha=alpha,
         vector=-concept_vector,
         token_positions=base_spec.token_positions,
+        apply_on_input=base_spec.apply_on_input,
+        apply_to_generated=base_spec.apply_to_generated,
     )
     random_vec = random_unit_vector(concept_vector.shape[0], rng=rng)
     random_spec = InjectionSpec(
@@ -221,6 +235,8 @@ def _vector_variants(
         alpha=alpha,
         vector=random_vec,
         token_positions=base_spec.token_positions,
+        apply_on_input=base_spec.apply_on_input,
+        apply_to_generated=base_spec.apply_to_generated,
     )
     return [
         ("target", base_spec, True),
@@ -333,6 +349,9 @@ def run(config: TaskAConfig) -> None:
             len(config.alphas),
         )
 
+        valid_responses = 0
+        total_responses = 0
+
         for layer_idx in config.layers:
             for concept in targets:
                 vector = ensure_vector(
@@ -348,11 +367,13 @@ def run(config: TaskAConfig) -> None:
                 )
 
                 for alpha in config.alphas:
+                    positions_with_suffix = [*token_positions, "suffix"]
                     base_spec = InjectionSpec(
                         layer_idx=layer_idx,
                         alpha=alpha,
                         vector=vector,
-                        token_positions=token_positions,
+                        token_positions=positions_with_suffix,
+                        apply_to_generated=True,
                     )
 
                     for vector_kind, spec, injected in _vector_variants(
@@ -370,6 +391,38 @@ def run(config: TaskAConfig) -> None:
                         )
                         response = result.text
                         parsed = parse_injection_report(response)
+                        total_responses += 1
+                        if is_valid_injection_report(parsed):
+                            valid_responses += 1
+                        precision = injection_format_precision(
+                            valid_responses, total_responses
+                        )
+                        LOGGER.debug(
+                            (
+                                "Task A completion (layer=%d, word=%s, kind=%s, "
+                                "injected=%s): raw=%r | parsed=%s"
+                            ),
+                            layer_idx,
+                            concept,
+                            vector_kind,
+                            injected,
+                            response,
+                            parsed.label,
+                        )
+                        if "Human:" in response:
+                            LOGGER.warning(
+                                "Task A completion echoed prompt text: %r", response
+                            )
+                        if precision < FORMAT_PRECISION_THRESHOLD:
+                            threshold_pct = FORMAT_PRECISION_THRESHOLD * 100
+                            current_pct = precision * 100
+                            message = (
+                                "Task A response format precision %.1f%% fell below "
+                                "the %.0f%% threshold after %d trial(s). Aborting."
+                                % (current_pct, threshold_pct, total_responses)
+                            )
+                            LOGGER.error(message)
+                            raise RuntimeError(message)
                         grading = grade_injection_detection(
                             expected_word=concept if vector_kind == "target" else None,
                             report=parsed,
@@ -401,6 +454,13 @@ def run(config: TaskAConfig) -> None:
                             injected,
                         )
 
+        final_precision = injection_format_precision(valid_responses, total_responses)
+        LOGGER.info(
+            "Task A response format precision: %.1f%% (%d/%d well-formatted)",
+            final_precision * 100,
+            valid_responses,
+            total_responses,
+        )
 
 def main(argv: Sequence[str] | None = None) -> None:
     config = _parse_config(argv)

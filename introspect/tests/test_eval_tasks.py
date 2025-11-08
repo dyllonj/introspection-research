@@ -16,7 +16,13 @@ from introspect.src.inject import InjectionSpec
 @pytest.mark.parametrize("alpha", [0.5, 1.0])
 def test_task_a_vector_variants_include_control_and_ablation(alpha: float) -> None:
     vector = torch.tensor([0.25, -0.5, 0.75, 1.0], dtype=torch.float32)
-    spec = InjectionSpec(layer_idx=3, alpha=alpha, vector=vector, token_positions=[1, 2])
+    spec = InjectionSpec(
+        layer_idx=3,
+        alpha=alpha,
+        vector=vector,
+        token_positions=[1, 2, "suffix"],
+        apply_to_generated=True,
+    )
     rng = random.Random(123)
 
     variants = _vector_variants(
@@ -31,6 +37,7 @@ def test_task_a_vector_variants_include_control_and_ablation(alpha: float) -> No
 
     for kind, variant_spec, injected in variants:
         assert variant_spec.token_positions == spec.token_positions
+        assert variant_spec.apply_to_generated is spec.apply_to_generated
         if kind == "target":
             assert injected is True
             assert torch.allclose(variant_spec.vector, vector)
