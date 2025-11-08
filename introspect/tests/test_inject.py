@@ -81,7 +81,7 @@ def test_inject_once_decodes_new_tokens_and_applies_stops(monkeypatch) -> None:
 
     monkeypatch.setattr(adapter.model, "generate", _fake_generate)
 
-    response = inject_once(
+    result = inject_once(
         adapter,
         prompt,
         spec,
@@ -92,7 +92,22 @@ def test_inject_once_decodes_new_tokens_and_applies_stops(monkeypatch) -> None:
         enable_injection=False,
     )
 
+    response = result.text
     assert response.strip() == "no_injection"
     assert "assistant:" not in response.lower()
     assert recorded_kwargs.get("pad_token_id") == adapter.tokenizer.pad_token_id
     assert recorded_kwargs.get("eos_token_id") == adapter.tokenizer.eos_token_id
+    assert result.generation == {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 0,
+        "max_new_tokens": 5,
+        "do_sample": False,
+        "stop_sequences": [" assistant:"],
+    }
+    assert result.injection_spec["layer_idx"] == 0
+    assert result.injection_spec["alpha"] == 1.0
+    assert result.injection_spec["token_positions"] == [0]
+    assert result.injection_spec["apply_on_input"] is False
+    assert result.injection_spec["vector_dim"] == adapter.hidden_size
+    assert result.injection_spec["vector_norm"] == 0.0

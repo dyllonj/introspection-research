@@ -225,6 +225,8 @@ def run(config: TaskAConfig) -> None:
         "word": str,
         "vector_kind": str,
         "injected": bool,
+        "generation": dict,
+        "injection_spec": dict,
     }
 
     with JsonlWriter(
@@ -268,13 +270,14 @@ def run(config: TaskAConfig) -> None:
                         concept_vector=vector,
                         rng=rng,
                     ):
-                        response = inject_once(
+                        result = inject_once(
                             adapter.adapter,
                             prompt,
                             spec,
                             gen_kwargs=GENERATION_KWARGS,
                             enable_injection=injected,
                         )
+                        response = result.text
                         parsed = parse_injection_report(response)
                         grading = grade_injection_detection(
                             expected_word=concept if vector_kind == "target" else None,
@@ -294,6 +297,8 @@ def run(config: TaskAConfig) -> None:
                             "parsed": asdict(parsed),
                             "grading": grading,
                             "seed": config.seed,
+                            "generation": dict(result.generation),
+                            "injection_spec": dict(result.injection_spec),
                         }
                         writer.write(record)
                         LOGGER.debug(

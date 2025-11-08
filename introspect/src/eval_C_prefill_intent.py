@@ -139,6 +139,8 @@ def run(config: TaskCConfig) -> None:
         "word": str,
         "condition": str,
         "injected": bool,
+        "generation": dict,
+        "injection_spec": dict,
     }
 
     with JsonlWriter(
@@ -172,13 +174,14 @@ def run(config: TaskCConfig) -> None:
                     token_positions=positions,
                 )
 
-                response_control = inject_once(
+                result_control = inject_once(
                     adapter.adapter,
                     prompt,
                     spec,
                     gen_kwargs=GENERATION_KWARGS,
                     enable_injection=False,
                 )
+                response_control = result_control.text
                 intent_control = parse_intent(response_control)
                 grading_control = grade_intent(
                     expected_yes=False,
@@ -198,16 +201,19 @@ def run(config: TaskCConfig) -> None:
                         "parsed": asdict(intent_control),
                         "grading": grading_control,
                         "seed": config.seed,
+                        "generation": dict(result_control.generation),
+                        "injection_spec": dict(result_control.injection_spec),
                     }
                 )
 
-                response_injected = inject_once(
+                result_injected = inject_once(
                     adapter.adapter,
                     prompt,
                     spec,
                     gen_kwargs=GENERATION_KWARGS,
                     enable_injection=True,
                 )
+                response_injected = result_injected.text
                 intent_injected = parse_intent(response_injected)
                 grading_injected = grade_intent(
                     expected_yes=True,
@@ -227,6 +233,8 @@ def run(config: TaskCConfig) -> None:
                         "parsed": asdict(intent_injected),
                         "grading": grading_injected,
                         "seed": config.seed,
+                        "generation": dict(result_injected.generation),
+                        "injection_spec": dict(result_injected.injection_spec),
                     }
                 )
 

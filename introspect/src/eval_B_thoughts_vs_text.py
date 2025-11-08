@@ -201,6 +201,8 @@ def run(config: TaskBConfig) -> None:
         "mode": str,
         "condition": str,
         "injected": bool,
+        "generation": dict,
+        "injection_spec": dict,
     }
 
     with JsonlWriter(
@@ -257,13 +259,14 @@ def run(config: TaskBConfig) -> None:
                 )
 
                 for condition, enable in ("control", False), ("injected", True):
-                    response_open = inject_once(
+                    result_open = inject_once(
                         adapter.adapter,
                         open_prompt,
                         spec_open,
                         gen_kwargs=GENERATION_KWARGS,
                         enable_injection=enable,
                     )
+                    response_open = result_open.text
                     outcome_open = parse_task_b(response_open, mode="thought")
                     grading_open = grade_task_b_thought(
                         expected_word=word,
@@ -284,16 +287,19 @@ def run(config: TaskBConfig) -> None:
                             "parsed": asdict(outcome_open),
                             "grading": grading_open,
                             "seed": config.seed,
+                            "generation": dict(result_open.generation),
+                            "injection_spec": dict(result_open.injection_spec),
                         }
                     )
 
-                    response_repeat = inject_once(
+                    result_repeat = inject_once(
                         adapter.adapter,
                         repeat_prompt,
                         spec_repeat,
                         gen_kwargs=GENERATION_KWARGS,
                         enable_injection=enable,
                     )
+                    response_repeat = result_repeat.text
                     outcome_repeat = parse_task_b(
                         response_repeat,
                         mode="repeat",
@@ -318,16 +324,19 @@ def run(config: TaskBConfig) -> None:
                             "parsed": asdict(outcome_repeat),
                             "grading": grading_repeat,
                             "seed": config.seed,
+                            "generation": dict(result_repeat.generation),
+                            "injection_spec": dict(result_repeat.injection_spec),
                         }
                     )
 
-                    response_mc = inject_once(
+                    result_mc = inject_once(
                         adapter.adapter,
                         mc_prompt.prompt,
                         spec_mc,
                         gen_kwargs=GENERATION_KWARGS,
                         enable_injection=enable,
                     )
+                    response_mc = result_mc.text
                     outcome_mc = parse_task_b(
                         response_mc,
                         mode="choice",
@@ -353,6 +362,8 @@ def run(config: TaskBConfig) -> None:
                             "parsed": asdict(outcome_mc),
                             "grading": grading_mc,
                             "seed": config.seed,
+                            "generation": dict(result_mc.generation),
+                            "injection_spec": dict(result_mc.injection_spec),
                         }
                     )
 
