@@ -23,11 +23,13 @@ from .generation import (
 __all__ = [
     "DEFAULT_GENERATION_KWARGS",
     "DEFAULT_STOP_SEQUENCES",
+    "InjectionResult",
     "InjectionSpec",
     "apply_generation_defaults",
     "decode_generated_tokens",
     "injection_context",
     "attach_injection",
+    "describe_injection_spec",
     "find_substring_span",
     "inject_once",
     "prepare_generation_inputs",
@@ -49,6 +51,41 @@ class InjectionSpec:
     vector: torch.Tensor
     token_positions: Sequence[int] | Sequence[IntSequence]
     apply_on_input: bool = False
+
+
+@dataclass(frozen=True)
+class InjectionResult:
+    """Structured return value from :func:`inject_once`."""
+
+    text: str
+    generation: Mapping[str, Any]
+    injection_spec: Mapping[str, Any]
+
+
+def _scalar_value(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            raise ValueError("Generation kwarg tensor must be scalar-valued")
+        return value.item()
+    return value
+
+
+def _as_float(value: Any, default: float) -> float:
+    if value is None:
+        return float(default)
+    return float(_scalar_value(value))
+
+
+def _as_int(value: Any, default: int) -> int:
+    if value is None:
+        return int(default)
+    return int(_scalar_value(value))
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return bool(default)
+    return bool(_scalar_value(value))
 
 
 def _canonicalize_positions(
@@ -138,6 +175,34 @@ def make_residual_hook(spec: InjectionSpec) -> Callable[[torch.nn.Module, tuple,
         return updated
 
     return hook
+
+
+def describe_injection_spec(spec: InjectionSpec) -> dict[str, Any]:
+    """Return a JSON-serialisable summary of an :class:`InjectionSpec`."""
+
+    positions = list(spec.token_positions)
+    serialised_positions: list[int] | list[list[int]]
+    if positions and isinstance(positions[0], Iterable) and not isinstance(positions[0], (bytes, str)):
+        serialised_positions = [
+            [int(idx) for idx in sequence]
+            for sequence in positions  # type: ignore[list-item]
+        ]
+    else:
+        serialised_positions = [int(idx) for idx in positions]  # type: ignore[arg-type]
+
+    vector = spec.vector.detach()
+    if not vector.dtype.is_floating_point:
+        vector = vector.to(dtype=torch.float32)
+
+    metadata = {
+        "layer_idx": int(spec.layer_idx),
+        "alpha": float(spec.alpha),
+        "token_positions": serialised_positions,
+        "apply_on_input": bool(spec.apply_on_input),
+        "vector_dim": int(vector.shape[0]),
+        "vector_norm": float(torch.linalg.vector_norm(vector).item()),
+    }
+    return metadata
 
 
 def attach_injection(adapter: BaseModelAdapter, spec: InjectionSpec) -> RemovableHandle:
@@ -271,7 +336,7 @@ def inject_once(
     span_slices: Sequence[tuple[int, int]] | None = None,
     gen_kwargs: Mapping[str, Any] | None = None,
     enable_injection: bool = True,
-) -> str:
+) -> InjectionResult:
     """Generate text with an optional single residual-stream injection applied.
 
     Args:
@@ -287,7 +352,9 @@ def inject_once(
         enable_injection: When ``False``, a control run without injection is executed.
 
     Returns:
-        The decoded output string from ``model.generate``.
+        An :class:`InjectionResult` containing the decoded output, the
+        deterministic generation parameters used, and metadata about the
+        resolved injection specification.
     """
 
     effective_positions: Sequence[int] | Sequence[IntSequence] | None = token_positions
@@ -307,6 +374,15 @@ def inject_once(
 
     stop_sequences = apply_generation_defaults(adapter, mutable_kwargs)
 
+    generation_summary = {
+        "temperature": _as_float(mutable_kwargs.get("temperature"), 0.0),
+        "top_p": _as_float(mutable_kwargs.get("top_p"), 1.0),
+        "top_k": _as_int(mutable_kwargs.get("top_k"), 0),
+        "max_new_tokens": _as_int(mutable_kwargs.get("max_new_tokens"), 0),
+        "do_sample": _as_bool(mutable_kwargs.get("do_sample"), False),
+        "stop_sequences": list(stop_sequences),
+    }
+
     inputs, prompt_len = prepare_generation_inputs(adapter, prompt)
 
     with injection_context(adapter, resolved_spec, enable=enable_injection):
@@ -314,10 +390,16 @@ def inject_once(
             adapter.model(**inputs, use_cache=True)
             output_ids = adapter.model.generate(**inputs, **mutable_kwargs)
 
-    return decode_generated_tokens(
+    decoded = decode_generated_tokens(
         adapter,
         output_ids,
         prompt_len,
         stop_sequences=stop_sequences,
+    )
+
+    return InjectionResult(
+        text=decoded,
+        generation=generation_summary,
+        injection_spec=describe_injection_spec(resolved_spec),
     )
 
