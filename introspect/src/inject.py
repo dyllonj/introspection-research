@@ -133,10 +133,19 @@ def _build_modifier(spec: InjectionSpec) -> Callable[[torch.Tensor], tuple[torch
             )
 
         per_batch = _canonicalize_positions(spec.token_positions, batch_size)
-        if any(max(pos, default=-1) >= seq_len for pos in per_batch if pos):
-            raise IndexError("Token position out of range for current sequence length")
         if any(min(pos) < 0 for pos in per_batch if pos):
             raise IndexError("Token position must be non-negative")
+
+        # Filter out positions that are beyond the current sequence length
+        # This happens during generation with KV caching where only new tokens are processed
+        valid_per_batch = []
+        for positions in per_batch:
+            valid_positions = [p for p in positions if p < seq_len]
+            valid_per_batch.append(valid_positions)
+
+        # If no valid positions remain, skip injection
+        if not any(valid_per_batch):
+            return hidden, False
 
         scaled_vector = (
             torch.as_tensor(spec.alpha, dtype=hidden.dtype, device=hidden.device)
@@ -145,7 +154,7 @@ def _build_modifier(spec: InjectionSpec) -> Callable[[torch.Tensor], tuple[torch
 
         result = hidden
         changed = False
-        for batch_idx, positions in enumerate(per_batch):
+        for batch_idx, positions in enumerate(valid_per_batch):
             if not positions:
                 continue
             if not changed:
