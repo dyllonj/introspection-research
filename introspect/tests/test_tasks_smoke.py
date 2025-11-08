@@ -34,6 +34,7 @@ EXPECTED_GENERATION = {
     "max_new_tokens": 64,
     "do_sample": False,
     "stop_sequences": list(DEFAULT_STOP_SEQUENCES),
+    "allowed_formats": [],
 }
 
 

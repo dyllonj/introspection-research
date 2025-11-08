@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, MutableMapping, Sequence, TYPE_CHECKING
+from collections.abc import Iterable, Sequence
+from typing import Any, Mapping, MutableMapping, TYPE_CHECKING
 
 import torch
+from transformers.generation.logits_process import LogitsProcessor, LogitsProcessorList
+from transformers.generation.stopping_criteria import (
+    StoppingCriteria,
+    StoppingCriteriaList,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type hints only
     from .adapters.base import BaseModelAdapter
@@ -12,9 +18,12 @@ if TYPE_CHECKING:  # pragma: no cover - imported for type hints only
 __all__ = [
     "DEFAULT_GENERATION_KWARGS",
     "DEFAULT_STOP_SEQUENCES",
-    "build_chat_prompt",
+    "AllowedPrefixLogitsProcessor",
+    "StopSequenceCriteria",
     "apply_generation_defaults",
+    "build_chat_prompt",
     "decode_generated_tokens",
+    "prepare_generation_controls",
     "prepare_generation_inputs",
     "trim_stop_sequences",
 ]
@@ -22,9 +31,15 @@ __all__ = [
 
 DEFAULT_STOP_SEQUENCES: tuple[str, ...] = (
     "\nAssistant:",
+    "\nAssistant:\n",
     "\nHuman:",
+    "\nHuman:\n",
     "\nUser:",
+    "\nUser:\n",
     "\nSystem:",
+    "\nSystem:\n",
+    "NO_INJECTION\n",
+    "INJECTION:\n",
 )
 """Canonical stop sequences shared across evaluation prompts."""
 
@@ -152,6 +167,165 @@ def _coerce_stop_sequences(value: Any) -> tuple[str, ...]:
     return tuple(seq for seq in sequences if seq)
 
 
+def _coerce_allowed_formats(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        formats = (value,)
+    else:
+        formats = tuple(str(fmt) for fmt in value)
+    return tuple(fmt for fmt in formats if fmt)
+
+
+def _tokenize_to_tuple(tokenizer: Any, text: str) -> tuple[int, ...]:
+    tokenized = tokenizer(
+        text,
+        add_special_tokens=False,
+    )
+    token_ids = tokenized.get("input_ids")
+    if isinstance(token_ids, torch.Tensor):
+        raw = token_ids.tolist()
+        if raw and isinstance(raw[0], list):
+            flattened = [int(token) for sublist in raw for token in sublist]
+        else:
+            flattened = [int(token) for token in raw]
+        return tuple(flattened)
+    if isinstance(token_ids, Iterable):
+        flattened: list[int] = []
+        for token in token_ids:
+            if isinstance(token, Iterable) and not isinstance(token, (bytes, bytearray)):
+                flattened.extend(int(t) for t in token)
+            else:
+                flattened.append(int(token))
+        return tuple(flattened)
+    return ()
+
+
+class StopSequenceCriteria(StoppingCriteria):
+    """Stop generation when any of the provided string sequences appear."""
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        stop_sequences: Sequence[str],
+        prompt_len: int,
+    ) -> None:
+        super().__init__()
+        self._tokenizer = tokenizer
+        self._prompt_len = prompt_len
+        self._stop_sequences = tuple(seq for seq in stop_sequences if seq)
+        self._token_sequences: list[tuple[int, ...]] = []
+        self._string_sequences: list[str] = []
+        for sequence in self._stop_sequences:
+            tokens = _tokenize_to_tuple(tokenizer, sequence)
+            if tokens:
+                self._token_sequences.append(tokens)
+            else:
+                self._string_sequences.append(sequence)
+
+    def __call__(
+        self,
+        input_ids: torch.LongTensor,
+        scores: torch.FloatTensor,
+        **_: Any,
+    ) -> bool:
+        if input_ids.ndim != 2:
+            return False
+
+        generated = input_ids[:, self._prompt_len :]
+        if generated.shape[1] == 0:
+            return False
+
+        generated_tokens = generated.tolist()
+        for row_tokens in generated_tokens:
+            for sequence in self._token_sequences:
+                seq_len = len(sequence)
+                if seq_len == 0 or len(row_tokens) < seq_len:
+                    continue
+                if row_tokens[-seq_len:] == list(sequence):
+                    return True
+
+        if not self._string_sequences:
+            return False
+
+        decoded = self._tokenizer.decode(
+            generated[0],
+            skip_special_tokens=False,
+        )
+        return any(sequence in decoded for sequence in self._string_sequences)
+
+
+class AllowedPrefixLogitsProcessor(LogitsProcessor):
+    """Restrict the vocabulary until a permitted prefix has been emitted."""
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        allowed_formats: Sequence[str],
+        prompt_len: int,
+    ) -> None:
+        self._tokenizer = tokenizer
+        self._prompt_len = prompt_len
+        self._allowed_formats = tuple(fmt for fmt in allowed_formats if fmt)
+        self._allowed_token_sequences: list[tuple[int, ...]] = []
+        for fmt in self._allowed_formats:
+            tokens = _tokenize_to_tuple(tokenizer, fmt)
+            if tokens:
+                self._allowed_token_sequences.append(tokens)
+        self._max_prefix_len = max(
+            (len(sequence) for sequence in self._allowed_token_sequences),
+            default=0,
+        )
+
+    @property
+    def has_prefixes(self) -> bool:
+        return bool(self._allowed_token_sequences)
+
+    def __call__(
+        self,
+        input_ids: torch.LongTensor,
+        scores: torch.FloatTensor,
+    ) -> torch.FloatTensor:
+        if not self._allowed_token_sequences:
+            return scores
+        if input_ids.ndim != 2 or scores.ndim != 2:
+            return scores
+
+        constrained = scores
+        batch_size = input_ids.shape[0]
+        for batch_index in range(batch_size):
+            generated = input_ids[batch_index, self._prompt_len :]
+            generated_len = int(generated.shape[0])
+            if generated_len == 0:
+                prefix_tokens: list[int] = []
+            else:
+                prefix_tokens = generated.tolist()
+
+            release_constraints = False
+            allowed_next: set[int] = set()
+
+            for sequence in self._allowed_token_sequences:
+                seq_len = len(sequence)
+                if generated_len >= seq_len:
+                    if prefix_tokens[:seq_len] == list(sequence):
+                        release_constraints = True
+                        break
+                    continue
+                if prefix_tokens == list(sequence[:generated_len]):
+                    allowed_next.add(sequence[generated_len])
+
+            if release_constraints or not allowed_next:
+                continue
+
+            mask_value = torch.finfo(constrained.dtype).min
+            updated = torch.full_like(constrained[batch_index], mask_value)
+            indices = sorted(allowed_next)
+            updated[indices] = constrained[batch_index, indices]
+            constrained[batch_index] = updated
+
+        return constrained
+
+
 def trim_stop_sequences(text: str, stop_sequences: Sequence[str]) -> str:
     """Trim ``text`` at the earliest occurrence of any ``stop_sequences``."""
 
@@ -220,8 +394,73 @@ def apply_generation_defaults(
     if eos_token_id is not None:
         gen_kwargs.setdefault("eos_token_id", eos_token_id)
 
-    stop_sequences = _coerce_stop_sequences(gen_kwargs.pop("stop_sequences", ()))
+    stop_value = gen_kwargs.get("stop_sequences", ())
+    stop_sequences = (
+        _coerce_stop_sequences(stop_value) if stop_value else DEFAULT_STOP_SEQUENCES
+    )
+    gen_kwargs["stop_sequences"] = stop_sequences
+
+    if "allowed_formats" in gen_kwargs:
+        gen_kwargs["allowed_formats"] = _coerce_allowed_formats(gen_kwargs["allowed_formats"])
+
     return stop_sequences
+
+
+def _collect_stopping_criteria(value: Any) -> list[StoppingCriteria]:
+    if value is None:
+        return []
+    if isinstance(value, StoppingCriteriaList):
+        return list(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [criterion for criterion in value]
+    return [value]
+
+
+def _collect_logits_processors(value: Any) -> list[LogitsProcessor]:
+    if value is None:
+        return []
+    if isinstance(value, LogitsProcessorList):
+        return list(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [processor for processor in value]
+    return [value]
+
+
+def prepare_generation_controls(
+    tokenizer: Any,
+    prompt_len: int,
+    gen_kwargs: MutableMapping[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Register stopping criteria and logits processors for generation."""
+
+    stop_sequences = tuple(gen_kwargs.get("stop_sequences", ()))
+    allowed_formats = tuple(gen_kwargs.get("allowed_formats", ()))
+
+    stopping_entries = []
+    stopping_entries.extend(_collect_stopping_criteria(gen_kwargs.pop("stopping_criteria", None)))
+    if stop_sequences:
+        stopping_entries.append(StopSequenceCriteria(tokenizer, stop_sequences, prompt_len))
+    if stopping_entries:
+        gen_kwargs["stopping_criteria"] = StoppingCriteriaList(stopping_entries)
+
+    processor_entries: list[LogitsProcessor] = []
+    processor_entries.extend(_collect_logits_processors(gen_kwargs.pop("logits_processor", None)))
+    processor_entries.extend(_collect_logits_processors(gen_kwargs.pop("logits_processors", None)))
+    if allowed_formats:
+        format_processor = AllowedPrefixLogitsProcessor(
+            tokenizer,
+            allowed_formats,
+            prompt_len,
+        )
+        if format_processor.has_prefixes:
+            processor_entries.append(format_processor)
+    if processor_entries:
+        gen_kwargs["logits_processor"] = LogitsProcessorList(processor_entries)
+
+    gen_kwargs.pop("stop_sequences", None)
+    gen_kwargs.pop("allowed_formats", None)
+
+    return stop_sequences, allowed_formats
 
 
 def decode_generated_tokens(

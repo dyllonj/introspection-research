@@ -16,6 +16,7 @@ from .generation import (
     DEFAULT_STOP_SEQUENCES,
     apply_generation_defaults,
     decode_generated_tokens,
+    prepare_generation_controls,
     prepare_generation_inputs,
     trim_stop_sequences,
 )
@@ -494,9 +495,18 @@ def inject_once(
         "max_new_tokens": _as_int(mutable_kwargs.get("max_new_tokens"), 0),
         "do_sample": _as_bool(mutable_kwargs.get("do_sample"), False),
         "stop_sequences": list(stop_sequences),
+        "allowed_formats": list(mutable_kwargs.get("allowed_formats", ())),
     }
 
     inputs, prompt_len = prepare_generation_inputs(adapter, prompt)
+
+    stop_sequences, allowed_formats = prepare_generation_controls(
+        adapter.tokenizer,
+        prompt_len,
+        mutable_kwargs,
+    )
+    generation_summary["stop_sequences"] = list(stop_sequences)
+    generation_summary["allowed_formats"] = list(allowed_formats)
 
     with injection_context(adapter, resolved_spec, enable=enable_injection):
         with torch.inference_mode():
