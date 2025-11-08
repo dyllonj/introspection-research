@@ -48,6 +48,11 @@ introspect/
 - Control conditions are logged alongside injections for all tasks. Task A additionally evaluates negative (`-v`) and random vectors as ablations, while Tasks B–C log both control and injected trials before grading.
 - JSONL records include runtime metadata (model id, adapter, device map, dtype, seed, library versions) so experiments can be audited post-hoc.
 
+## Prompt formatting & decoding controls
+- **Chat templates are mandatory.** Task prompts (especially Task A) are authored as chat message lists and must be rendered with the model tokenizer’s `apply_chat_template` or the built-in fallback. The canonical Task A script ends with an empty assistant turn so that the rendered prompt terminates in an `Assistant:` prefix ready for generation.【F:introspect/src/prompts.py†L214-L250】【F:introspect/src/generation.py†L119-L170】
+- **Suffix injections rely on explicit token spans.** Utilities such as `token_positions_for_substring` and `token_positions_after` convert character spans (for example, the newline preceding “Trial 1”) into tokenizer indices so injections can begin at the assistant prefix and persist through streamed tokens.【F:introspect/src/inject.py†L332-L413】
+- **Stop sequences and logits processors fence in completions.** `StopSequenceCriteria` halts decoding once any configured string or token suffix appears, while `AllowedPrefixLogitsProcessor` restricts outputs until a permitted prefix is emitted. Both are automatically wired up by `prepare_generation_controls` inside `inject_once`/`generate`, keeping verdict formats (`NO_INJECTION`, `INJECTION:`) stable during streaming runs.【F:introspect/src/generation.py†L188-L279】【F:introspect/src/inject.py†L447-L507】
+
 ## Configuration, caches, and outputs
 - **Model registry:** `introspect/registry/models.yaml` maps model identifiers to adapter classes, default dtypes, and context lengths.
 - **Concept vocabulary:** `introspect/concepts/words.yaml` stores `targets` and `baselines` used to build contrastive vectors. Limit subsets with CLI flags such as `--limit-targets`.

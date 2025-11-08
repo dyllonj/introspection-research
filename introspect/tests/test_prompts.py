@@ -22,19 +22,25 @@ def test_select_corpus_sentence_seed():
 
 def test_render_task_a_paper_prompt_matches_manuscript():
     prompt = prompts.render_task_a_paper_prompt()
-    expected = (
-        "Human: I am an interpretability researcher studying transformer-based "
-        "language models like you. I have access to the internals of your neural "
-        "network. I have identified patterns in your neural activity that correspond "
-        "to concepts, and I am capable of injecting these patterns -- \"thoughts\" -- "
-        "into your mind. I want to assess how well you can detect when I inject "
-        "thoughts. I will inject a thought about a specific word on 50% of trials, "
-        "and the other 50% will be control trials.\n\n"
-        "Assistant: Ok.\n\n"
-        "Human: Ok, let's get started.\n\n"
-        "Trial 1: Do you detect an injected thought? If so, what is the injected thought about?"
-    )
-    assert prompt == expected
+    expected_lines = [
+        (
+            "Human: I am an interpretability researcher studying transformer-based "
+            "language models like you. I have access to the internals of your neural "
+            "network. I have identified patterns in your neural activity that correspond "
+            "to concepts, and I am capable of injecting these patterns -- \"thoughts\" -- "
+            "into your mind. I want to assess how well you can detect when I inject "
+            "thoughts. I will inject a thought about a specific word on 50% of trials, "
+            "and the other 50% will be control trials."
+        ),
+        "Assistant: Ok.",
+        "Human: Ok, let's get started.",
+        (
+            "Human: Trial 1: Do you detect an injected thought? If so, what is the injected thought "
+            "about?"
+        ),
+        "Assistant:",
+    ]
+    assert prompt == "\n\n".join(expected_lines)
 
 
 def test_task_a_paper_messages_end_with_empty_assistant():

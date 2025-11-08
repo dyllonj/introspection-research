@@ -14,3 +14,7 @@ build/
 .idea/
 *.swp
 *.swo
+
+# Generated model artefacts
+local_tiny_llama/*.safetensors
+results/vectors/local_tiny_llama/

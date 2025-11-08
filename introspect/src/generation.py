@@ -353,8 +353,11 @@ def prepare_generation_inputs(
         raise TypeError(msg)
 
     device = next(adapter.model.parameters()).device
+    ignored_keys = {"token_type_ids"}
     tensor_inputs: dict[str, torch.Tensor] = {}
     for name, value in tokenizer_inputs.items():
+        if name in ignored_keys:
+            continue
         if isinstance(value, torch.Tensor):
             tensor_inputs[name] = value.to(device)
 
