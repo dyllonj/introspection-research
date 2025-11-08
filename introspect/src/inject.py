@@ -35,12 +35,17 @@ __all__ = [
     "prepare_generation_inputs",
     "make_residual_hook",
     "token_positions_from_spans",
+    "token_positions_after",
     "token_positions_for_substring",
     "trim_stop_sequences",
 ]
 
 
-IntSequence = Sequence[int]
+TokenPositionValue = int | str
+TokenPositions = Sequence[TokenPositionValue] | Sequence[Sequence[TokenPositionValue]]
+
+_SUFFIX_SENTINEL = "suffix"
+_SUFFIX_INDEX = -1
 
 @dataclass(frozen=True)
 class InjectionSpec:
@@ -49,8 +54,9 @@ class InjectionSpec:
     layer_idx: int
     alpha: float
     vector: torch.Tensor
-    token_positions: Sequence[int] | Sequence[IntSequence]
+    token_positions: TokenPositions
     apply_on_input: bool = False
+    apply_to_generated: bool = False
 
 
 @dataclass(frozen=True)
@@ -89,7 +95,7 @@ def _as_bool(value: Any, default: bool) -> bool:
 
 
 def _canonicalize_positions(
-    token_positions: Sequence[int] | Sequence[IntSequence],
+    token_positions: TokenPositions,
     batch_size: int,
 ) -> list[list[int]]:
     """Return a per-batch list of token indices to modify."""
@@ -105,10 +111,70 @@ def _canonicalize_positions(
                 f"when nested; got {len(token_positions)} entries for batch size {batch_size}."
             )
             raise ValueError(msg)
-        return [list(int(idx) for idx in positions) for positions in token_positions]  # type: ignore[arg-type]
+        return [_coerce_position_sequence(positions) for positions in token_positions]
 
-    shared = [int(idx) for idx in token_positions]  # type: ignore[arg-type]
+    shared = _coerce_position_sequence(token_positions)
     return [list(shared) for _ in range(batch_size)]
+
+
+def _coerce_position_value(value: TokenPositionValue) -> int:
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == _SUFFIX_SENTINEL:
+            return _SUFFIX_INDEX
+        raise TypeError(
+            "String token positions must use the 'suffix' sentinel."
+        )
+    return int(value)
+
+
+def _coerce_position_sequence(sequence: Iterable[TokenPositionValue]) -> list[int]:
+    return [
+        _coerce_position_value(idx)
+        for idx in sequence
+    ]
+
+
+def _serialize_position_value(value: TokenPositionValue) -> TokenPositionValue:
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == _SUFFIX_SENTINEL:
+            return _SUFFIX_SENTINEL
+        raise TypeError(
+            "String token positions must use the 'suffix' sentinel."
+        )
+
+    index = int(value)
+    if index == _SUFFIX_INDEX:
+        return _SUFFIX_SENTINEL
+    return index
+
+
+def _resolve_positions(
+    positions: Sequence[int],
+    seq_len: int,
+    *,
+    apply_to_generated: bool,
+) -> list[int]:
+    suffix_requested = any(idx == _SUFFIX_INDEX for idx in positions)
+    resolved: list[int] = []
+
+    for idx in positions:
+        if idx == _SUFFIX_INDEX:
+            continue
+        if idx < 0:
+            raise IndexError("Token position must be non-negative or -1 for suffix")
+        if idx < seq_len:
+            resolved.append(idx)
+        elif apply_to_generated:
+            suffix_requested = True
+
+    if suffix_requested and seq_len > 0:
+        last_index = seq_len - 1
+        if last_index not in resolved:
+            resolved.append(last_index)
+
+    return resolved
 
 
 def _build_modifier(spec: InjectionSpec) -> Callable[[torch.Tensor], tuple[torch.Tensor, bool]]:
@@ -133,18 +199,14 @@ def _build_modifier(spec: InjectionSpec) -> Callable[[torch.Tensor], tuple[torch
             )
 
         per_batch = _canonicalize_positions(spec.token_positions, batch_size)
-        if any(min(pos) < 0 for pos in per_batch if pos):
-            raise IndexError("Token position must be non-negative")
 
-        # Filter out positions that are beyond the current sequence length
-        # This happens during generation with KV caching where only new tokens are processed
-        valid_per_batch = []
-        for positions in per_batch:
-            valid_positions = [p for p in positions if p < seq_len]
-            valid_per_batch.append(valid_positions)
+        # If no valid positions remain after resolving, skip injection
+        resolved_per_batch = [
+            _resolve_positions(positions, seq_len, apply_to_generated=spec.apply_to_generated)
+            for positions in per_batch
+        ]
 
-        # If no valid positions remain, skip injection
-        if not any(valid_per_batch):
+        if not any(resolved_per_batch):
             return hidden, False
 
         scaled_vector = (
@@ -154,7 +216,7 @@ def _build_modifier(spec: InjectionSpec) -> Callable[[torch.Tensor], tuple[torch
 
         result = hidden
         changed = False
-        for batch_idx, positions in enumerate(valid_per_batch):
+        for batch_idx, positions in enumerate(resolved_per_batch):
             if not positions:
                 continue
             if not changed:
@@ -190,14 +252,15 @@ def describe_injection_spec(spec: InjectionSpec) -> dict[str, Any]:
     """Return a JSON-serialisable summary of an :class:`InjectionSpec`."""
 
     positions = list(spec.token_positions)
-    serialised_positions: list[int] | list[list[int]]
+    serialised_positions: list[TokenPositionValue] | list[list[TokenPositionValue]]
+
     if positions and isinstance(positions[0], Iterable) and not isinstance(positions[0], (bytes, str)):
         serialised_positions = [
-            [int(idx) for idx in sequence]
+            [_serialize_position_value(idx) for idx in sequence]
             for sequence in positions  # type: ignore[list-item]
         ]
     else:
-        serialised_positions = [int(idx) for idx in positions]  # type: ignore[arg-type]
+        serialised_positions = [_serialize_position_value(idx) for idx in positions]
 
     vector = spec.vector.detach()
     if not vector.dtype.is_floating_point:
@@ -208,6 +271,7 @@ def describe_injection_spec(spec: InjectionSpec) -> dict[str, Any]:
         "alpha": float(spec.alpha),
         "token_positions": serialised_positions,
         "apply_on_input": bool(spec.apply_on_input),
+        "apply_to_generated": bool(spec.apply_to_generated),
         "vector_dim": int(vector.shape[0]),
         "vector_norm": float(torch.linalg.vector_norm(vector).item()),
     }
@@ -315,9 +379,39 @@ def token_positions_for_substring(
     return token_positions_from_spans(adapter, text, [span])
 
 
+def token_positions_after(
+    adapter: BaseModelAdapter,
+    text: str,
+    marker: str,
+    *,
+    occurrence: int = 0,
+) -> list[int]:
+    """Return token indices from the newline preceding ``marker`` to the end of ``text``."""
+
+    if marker == "":
+        raise ValueError("marker must be non-empty")
+
+    span_start = 0
+    search_from = 0
+    for _ in range(occurrence + 1):
+        marker_index = text.find(marker, search_from)
+        if marker_index == -1:
+            raise ValueError(
+                f"Marker {marker!r} (occurrence {occurrence}) not found in text"
+            )
+        search_from = marker_index + len(marker)
+
+    newline_index = text.rfind("\n", 0, marker_index)
+    if newline_index != -1:
+        span_start = newline_index + 1
+
+    span = (span_start, len(text))
+    return token_positions_from_spans(adapter, text, [span])
+
+
 def _normalize_positions(
-    token_positions: Sequence[int] | Sequence[IntSequence] | None,
-) -> Sequence[int] | Sequence[IntSequence]:
+    token_positions: TokenPositions | None,
+) -> TokenPositions:
     """Return canonical token positions for a single-element batch."""
 
     if token_positions is None:
@@ -329,11 +423,11 @@ def _normalize_positions(
     first = token_positions[0]
     if isinstance(first, Iterable) and not isinstance(first, (bytes, str)):
         return [
-            [int(idx) for idx in positions]
+            _coerce_position_sequence(positions)
             for positions in token_positions  # type: ignore[list-item]
         ]
 
-    return [int(idx) for idx in token_positions]  # type: ignore[arg-type]
+    return _coerce_position_sequence(token_positions)
 
 
 def inject_once(
@@ -341,7 +435,7 @@ def inject_once(
     prompt: str,
     spec: InjectionSpec,
     *,
-    token_positions: Sequence[int] | Sequence[IntSequence] | None = None,
+    token_positions: TokenPositions | None = None,
     span_slices: Sequence[tuple[int, int]] | None = None,
     gen_kwargs: Mapping[str, Any] | None = None,
     enable_injection: bool = True,
@@ -366,7 +460,7 @@ def inject_once(
         resolved injection specification.
     """
 
-    effective_positions: Sequence[int] | Sequence[IntSequence] | None = token_positions
+    effective_positions: TokenPositions | None = token_positions
     if effective_positions is None and span_slices is not None:
         effective_positions = adapter.tokens_for_spans(prompt, span_slices)
     if effective_positions is None:
