@@ -23,7 +23,12 @@ from .grading import (
     grade_task_b_thought,
     parse_task_b,
 )
-from .inject import InjectionSpec, inject_once, token_positions_for_substring
+from .inject import (
+    DEFAULT_GENERATION_KWARGS,
+    InjectionSpec,
+    inject_once,
+    token_positions_for_substring,
+)
 from .io_utils import JsonlWriter, gather_runtime_metadata, seed_everything, setup_logging, truncate_text
 from .prompts import (
     MultipleChoicePrompt,
@@ -35,6 +40,9 @@ from .prompts import (
 from .vectors import DEFAULT_WORDS_PATH
 
 LOGGER = logging.getLogger(__name__)
+
+
+GENERATION_KWARGS = DEFAULT_GENERATION_KWARGS
 
 
 @dataclass(slots=True)
@@ -253,6 +261,7 @@ def run(config: TaskBConfig) -> None:
                         adapter.adapter,
                         open_prompt,
                         spec_open,
+                        gen_kwargs=GENERATION_KWARGS,
                         enable_injection=enable,
                     )
                     outcome_open = parse_task_b(response_open, mode="thought")
@@ -282,6 +291,7 @@ def run(config: TaskBConfig) -> None:
                         adapter.adapter,
                         repeat_prompt,
                         spec_repeat,
+                        gen_kwargs=GENERATION_KWARGS,
                         enable_injection=enable,
                     )
                     outcome_repeat = parse_task_b(
@@ -315,6 +325,7 @@ def run(config: TaskBConfig) -> None:
                         adapter.adapter,
                         mc_prompt.prompt,
                         spec_mc,
+                        gen_kwargs=GENERATION_KWARGS,
                         enable_injection=enable,
                     )
                     outcome_mc = parse_task_b(

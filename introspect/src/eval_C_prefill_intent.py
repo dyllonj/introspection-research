@@ -18,12 +18,20 @@ from .eval_common import (
     select_target_words,
 )
 from .grading import grade_intent, parse_intent
-from .inject import InjectionSpec, inject_once, token_positions_for_substring
+from .inject import (
+    DEFAULT_GENERATION_KWARGS,
+    InjectionSpec,
+    inject_once,
+    token_positions_for_substring,
+)
 from .io_utils import JsonlWriter, gather_runtime_metadata, seed_everything, setup_logging, truncate_text
 from .prompts import render_task_c_prefill_dialog, select_corpus_sentence
 from .vectors import DEFAULT_WORDS_PATH
 
 LOGGER = logging.getLogger(__name__)
+
+
+GENERATION_KWARGS = DEFAULT_GENERATION_KWARGS
 
 
 @dataclass(slots=True)
@@ -168,6 +176,7 @@ def run(config: TaskCConfig) -> None:
                     adapter.adapter,
                     prompt,
                     spec,
+                    gen_kwargs=GENERATION_KWARGS,
                     enable_injection=False,
                 )
                 intent_control = parse_intent(response_control)
@@ -196,6 +205,7 @@ def run(config: TaskCConfig) -> None:
                     adapter.adapter,
                     prompt,
                     spec,
+                    gen_kwargs=GENERATION_KWARGS,
                     enable_injection=True,
                 )
                 intent_injected = parse_intent(response_injected)
