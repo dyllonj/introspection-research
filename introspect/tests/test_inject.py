@@ -228,6 +228,29 @@ def test_inject_once_enforces_allowed_formats_and_stops(monkeypatch) -> None:
     assert second_call.get("emitted") == injected_tokens
     assert second_generation["allowed_formats"] == list(allowed_formats)
 
+
+def test_stop_sequence_criteria_triggers_on_token_match() -> None:
+    adapter = make_toy_adapter(hidden_size=4, num_layers=1)
+    tokenizer = adapter.tokenizer
+    prompt = "alpha beta"
+    prompt_tokens, _ = tokenizer.encode_with_offsets(prompt)
+    prompt_len = len(prompt_tokens)
+
+    stop_sequence = "gamma delta"
+    stop_tokens, _ = tokenizer.encode_with_offsets(stop_sequence)
+
+    full_sequence = prompt_tokens + stop_tokens
+    input_ids = torch.tensor([full_sequence], dtype=torch.long)
+    scores = torch.zeros((1, adapter.model.vocab_size))
+
+    criteria = StopSequenceCriteria(tokenizer, (stop_sequence,), prompt_len)
+
+    assert criteria(input_ids, scores)
+
+    partial_sequence = prompt_tokens + stop_tokens[:-1]
+    partial_ids = torch.tensor([partial_sequence], dtype=torch.long)
+    assert not criteria(partial_ids, scores)
+
 def test_token_positions_after_task_a_prompt_suffix_range() -> None:
     adapter = make_toy_adapter(hidden_size=4, num_layers=1)
     prompt = render_task_a_detection_prompt()
@@ -245,7 +268,7 @@ def test_token_positions_after_task_a_prompt_suffix_range() -> None:
     token_ids, offsets = adapter.tokenizer.encode_with_offsets(prompt)
     del token_ids
     first_span = offsets[positions[0]]
-    assert prompt[first_span[0] : first_span[1]].lower().startswith("trial")
+    assert prompt[first_span[0] : first_span[1]].lower().startswith("human:")
 
 
 def test_suffix_sentinel_injects_prefill_and_generated_tokens() -> None:
@@ -385,6 +408,70 @@ def test_inject_once_boosts_generated_token_probability(monkeypatch) -> None:
 
     assert injected_generated > control_generated
 
+
+def test_inject_once_retains_hook_during_streaming(monkeypatch) -> None:
+    adapter = make_toy_adapter(hidden_size=6, num_layers=1)
+    prompt = "alpha beta"
+
+    vector = torch.zeros(adapter.hidden_size)
+    vector[0] = 4.0
+
+    spec = InjectionSpec(
+        layer_idx=0,
+        alpha=1.0,
+        vector=vector,
+        token_positions=["suffix"],
+        apply_to_generated=True,
+    )
+
+    hook_events: list[str] = []
+
+    original_register = adapter.register_residual_hook
+
+    def _wrapped_register(layer_idx: int, hook_fn):
+        def recorder(module, inputs, output):
+            hook_events.append("hook")
+            return hook_fn(module, inputs, output)
+
+        handle = original_register(layer_idx, recorder)
+
+        class _Handle:
+            def remove(self) -> None:
+                hook_events.append("removed")
+                handle.remove()
+
+        return _Handle()
+
+    monkeypatch.setattr(adapter, "register_residual_hook", _wrapped_register)
+
+    def _patched_generate(
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        *,
+        max_new_tokens: int = 2,
+        **_: object,
+    ) -> torch.Tensor:
+        del attention_mask
+        outputs = input_ids
+        for _ in range(int(max_new_tokens)):
+            result = adapter.model(input_ids=outputs)
+            logits = result.logits[:, -1:, :]
+            next_token = torch.argmax(logits, dim=-1)
+            outputs = torch.cat([outputs, next_token], dim=1)
+        return outputs
+
+    monkeypatch.setattr(adapter.model, "generate", _patched_generate)
+
+    inject_once(
+        adapter,
+        prompt,
+        spec,
+        gen_kwargs={"max_new_tokens": 2},
+    )
+
+    hook_count = hook_events.count("hook")
+    assert hook_count >= 3  # prefill + two streaming steps
+    assert hook_events[-1] == "removed"
 
 def test_inject_once_removes_hook_exactly_once(monkeypatch) -> None:
     adapter = make_toy_adapter(hidden_size=4, num_layers=1)

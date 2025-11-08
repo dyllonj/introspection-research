@@ -23,6 +23,11 @@ Style: PEP8, type hints, docstrings, small cohesive functions, unit/integration 
 
 Licenses: Keep the code Apache‑2.0 compatible (no non‑compatible deps).
 
+Prompt formatting & decoding controls:
+- Task prompts must be expressed as chat message lists and rendered via the tokenizer’s chat template (or the built-in Human/Assistant fallback). Task A **must** end with an empty assistant turn so the rendered prompt terminates in the assistant prefix before sampling.
+- When injecting on “suffix” tokens, derive token indices from explicit spans – e.g. use `token_positions_for_substring` or `token_positions_after` to anchor the assistant prefix or the newline before “Trial 1”. Avoid guessing offsets.
+- Always enforce stop sequences and allowed-format logits processors during decoding so verdict strings (`NO_INJECTION`, `INJECTION:`) stay constrained even during streaming.
+
 1) Repository & files (create exactly this layout)
 introspect/
   registry/                  # model metadata (hf id, dtype, context len, adapter class)
