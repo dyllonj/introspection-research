@@ -190,10 +190,19 @@ def _evenly_spaced_layers(model_id: str, count: int) -> list[int]:
     total_layers = _resolve_num_layers(model_id)
     if count >= total_layers:
         return list(range(total_layers))
+    if count == 1:
+        return [total_layers - 1]
     indices = np.linspace(0, total_layers - 1, num=count)
-    unique = sorted({int(round(idx)) for idx in indices})
-    if unique[-1] >= total_layers:
-        unique[-1] = total_layers - 1
+    rounded = [int(round(idx)) for idx in indices]
+    rounded[0] = 0
+    rounded[-1] = total_layers - 1
+    unique: list[int] = []
+    for idx in rounded:
+        idx = min(total_layers - 1, max(0, idx))
+        if not unique or idx != unique[-1]:
+            unique.append(idx)
+    if unique[-1] != total_layers - 1:
+        unique.append(total_layers - 1)
     return unique
 
 
