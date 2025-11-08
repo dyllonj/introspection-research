@@ -21,6 +21,7 @@ from .base import (
 from ..generation import (
     apply_generation_defaults,
     decode_generated_tokens,
+    prepare_generation_controls,
     prepare_generation_inputs,
 )
 
@@ -147,6 +148,12 @@ class NeoXAdapter:
         if stop_sequences is not None and "stop_sequences" not in kwargs:
             kwargs["stop_sequences"] = tuple(stop_sequences)
         stop_sequences = apply_generation_defaults(self, kwargs)
+
+        stop_sequences, _allowed_formats = prepare_generation_controls(
+            self.tokenizer,
+            prompt_len,
+            kwargs,
+        )
 
         with torch.no_grad():
             output_ids = self.model.generate(**tensor_inputs, **kwargs)

@@ -7,7 +7,7 @@ import logging
 import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .eval_common import (
     LoadedAdapter,
@@ -34,7 +34,10 @@ from .vectors import DEFAULT_WORDS_PATH
 LOGGER = logging.getLogger(__name__)
 
 
-GENERATION_KWARGS = DEFAULT_GENERATION_KWARGS
+GENERATION_KWARGS: Mapping[str, Any] = {
+    **DEFAULT_GENERATION_KWARGS,
+    "allowed_formats": ("NO_INJECTION", "INJECTION: "),
+}
 
 
 def _normalise_stop_sequences(value: Any) -> tuple[str, ...]:

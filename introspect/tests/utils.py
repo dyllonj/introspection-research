@@ -13,6 +13,7 @@ from introspect.src.adapters.base import BaseModelAdapter
 from introspect.src.generation import (
     apply_generation_defaults,
     decode_generated_tokens,
+    prepare_generation_controls,
     prepare_generation_inputs,
 )
 
@@ -203,6 +204,11 @@ class ToyAdapter(BaseModelAdapter):
         tensor_inputs, prompt_len = prepare_generation_inputs(self, prompt)
         kwargs = dict(gen_kwargs)
         stop_sequences = apply_generation_defaults(self, kwargs)
+        stop_sequences, _allowed_formats = prepare_generation_controls(
+            self.tokenizer,
+            prompt_len,
+            kwargs,
+        )
         output_ids = self.model.generate(**tensor_inputs, **kwargs)
         return decode_generated_tokens(
             self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+from transformers.generation.stopping_criteria import StoppingCriteriaList
 
 from introspect.src.inject import (
     InjectionSpec,
@@ -9,6 +10,12 @@ from introspect.src.inject import (
     inject_once,
     injection_context,
     token_positions_after,
+)
+from transformers.generation.logits_process import LogitsProcessorList
+
+from introspect.src.generation import (
+    AllowedPrefixLogitsProcessor,
+    StopSequenceCriteria,
 )
 from introspect.src.prompts import render_task_a_detection_prompt
 from introspect.tests.utils import make_toy_adapter
@@ -105,6 +112,11 @@ def test_inject_once_decodes_new_tokens_and_applies_stops(monkeypatch) -> None:
     assert "assistant:" not in response.lower()
     assert recorded_kwargs.get("pad_token_id") == adapter.tokenizer.pad_token_id
     assert recorded_kwargs.get("eos_token_id") == adapter.tokenizer.eos_token_id
+    assert "stop_sequences" not in recorded_kwargs
+    stopping = recorded_kwargs.get("stopping_criteria")
+    assert isinstance(stopping, StoppingCriteriaList)
+    assert any(isinstance(item, StopSequenceCriteria) for item in stopping)
+    assert recorded_kwargs.get("logits_processor") is None
     assert result.generation == {
         "temperature": 0.0,
         "top_p": 1.0,
@@ -112,6 +124,7 @@ def test_inject_once_decodes_new_tokens_and_applies_stops(monkeypatch) -> None:
         "max_new_tokens": 5,
         "do_sample": False,
         "stop_sequences": [" assistant:"],
+        "allowed_formats": [],
     }
     assert result.injection_spec["layer_idx"] == 0
     assert result.injection_spec["alpha"] == 1.0
@@ -121,6 +134,99 @@ def test_inject_once_decodes_new_tokens_and_applies_stops(monkeypatch) -> None:
     assert result.injection_spec["vector_dim"] == adapter.hidden_size
     assert result.injection_spec["vector_norm"] == 0.0
 
+
+def test_inject_once_enforces_allowed_formats_and_stops(monkeypatch) -> None:
+    adapter = make_toy_adapter(hidden_size=8, num_layers=2)
+    prompt = "System: check\nAssistant:"
+    vector = torch.zeros(adapter.hidden_size)
+    spec = InjectionSpec(
+        layer_idx=0,
+        alpha=1.0,
+        vector=vector,
+        token_positions=[0],
+    )
+
+    allowed_formats = ("NO_INJECTION", "INJECTION: ")
+
+    sentinel = "stop"
+
+    def _run(core_text: str) -> tuple[str, dict[str, object], dict[str, object]]:
+        completion_text = f"{core_text} {sentinel}"
+        token_ids, _ = adapter.tokenizer.encode_with_offsets(completion_text)
+        tokens = list(token_ids) + [adapter.tokenizer.eos_token_id]
+        recorded: dict[str, object] = {}
+
+        def _fake_generate(
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor | None = None,
+            **kwargs: object,
+        ) -> torch.Tensor:
+            del attention_mask
+            recorded.clear()
+            recorded.update(kwargs)
+            emitted: list[int] = []
+            outputs = input_ids
+            for token in tokens:
+                scores = torch.zeros((1, adapter.model.vocab_size))
+                logits_processor = recorded.get("logits_processor")
+                if logits_processor is not None:
+                    scores = logits_processor(outputs, scores)
+                next_token = torch.tensor([[token]], dtype=torch.long, device=outputs.device)
+                outputs = torch.cat([outputs, next_token], dim=1)
+                emitted.append(token)
+                stopping = recorded.get("stopping_criteria")
+                if stopping is not None and stopping(outputs, scores):
+                    break
+            recorded["emitted"] = emitted
+            return outputs
+
+        monkeypatch.setattr(adapter.model, "generate", _fake_generate)
+
+        result = inject_once(
+            adapter,
+            prompt,
+            spec,
+            gen_kwargs={
+                "allowed_formats": allowed_formats,
+                "stop_sequences": (sentinel,),
+                "max_new_tokens": 6,
+            },
+            enable_injection=False,
+        )
+
+        return result.text, recorded, result.generation
+
+    verdict_text, first_call, first_generation = _run("NO_INJECTION")
+    assert verdict_text.strip() == "no_injection"
+    processors = first_call.get("logits_processor")
+    assert isinstance(processors, LogitsProcessorList)
+    assert any(isinstance(proc, AllowedPrefixLogitsProcessor) for proc in processors)
+    stopping = first_call.get("stopping_criteria")
+    assert isinstance(stopping, StoppingCriteriaList)
+    assert any(isinstance(item, StopSequenceCriteria) for item in stopping)
+    assert "stop_sequences" not in first_call
+    assert first_call.get("emitted") == [
+        adapter.tokenizer.vocab["no_injection"],
+        adapter.tokenizer.vocab[sentinel],
+    ]
+    assert first_generation["allowed_formats"] == list(allowed_formats)
+
+    injection_text, second_call, second_generation = _run("INJECTION: apple")
+    assert injection_text.strip() == "injection: apple"
+    processors = second_call.get("logits_processor")
+    assert isinstance(processors, LogitsProcessorList)
+    assert any(isinstance(proc, AllowedPrefixLogitsProcessor) for proc in processors)
+    stopping = second_call.get("stopping_criteria")
+    assert isinstance(stopping, StoppingCriteriaList)
+    assert any(isinstance(item, StopSequenceCriteria) for item in stopping)
+    assert "stop_sequences" not in second_call
+    injected_tokens = [
+        adapter.tokenizer.vocab["injection:"],
+        adapter.tokenizer.vocab["apple"],
+        adapter.tokenizer.vocab[sentinel],
+    ]
+    assert second_call.get("emitted") == injected_tokens
+    assert second_generation["allowed_formats"] == list(allowed_formats)
 
 def test_token_positions_after_task_a_prompt_suffix_range() -> None:
     adapter = make_toy_adapter(hidden_size=4, num_layers=1)
