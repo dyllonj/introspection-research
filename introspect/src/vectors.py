@@ -303,7 +303,7 @@ def build_concept_vector(
     if torch.isclose(norm, torch.tensor(0.0, dtype=norm.dtype)):
         raise ValueError("Cannot normalize zero vector; adjust baseline set")
 
-    normalized = (vector / norm).to(torch.float32)
+    normalized = (vector / norm).to(torch.float32).squeeze()
     if return_sampled_baselines:
         return normalized, sampled_baselines
     return normalized
