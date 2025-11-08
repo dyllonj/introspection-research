@@ -127,9 +127,18 @@ class MistralAdapter:
 
         return list(dict.fromkeys(selected))
 
-    def generate(self, prompt: str, /, **gen_kwargs: Any) -> str:
+    def generate(
+        self,
+        prompt: str,
+        /,
+        *,
+        stop_sequences: Sequence[str] | None = None,
+        **gen_kwargs: Any,
+    ) -> str:
         tensor_inputs, prompt_len = prepare_generation_inputs(self, prompt)
         kwargs = dict(gen_kwargs)
+        if stop_sequences is not None and "stop_sequences" not in kwargs:
+            kwargs["stop_sequences"] = tuple(stop_sequences)
         stop_sequences = apply_generation_defaults(self, kwargs)
 
         with torch.no_grad():

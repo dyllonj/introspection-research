@@ -20,6 +20,7 @@ from .eval_common import (
     select_target_words,
 )
 from .grading import grade_injection_detection, parse_injection_report
+from .generation import build_chat_prompt
 from .inject import (
     DEFAULT_GENERATION_KWARGS,
     InjectionSpec,
@@ -27,13 +28,32 @@ from .inject import (
     token_positions_for_substring,
 )
 from .io_utils import JsonlWriter, gather_runtime_metadata, seed_everything, setup_logging, truncate_text
-from .prompts import render_task_a_detection_prompt
+from .prompts import task_a_paper_messages
 from .vectors import DEFAULT_WORDS_PATH
 
 LOGGER = logging.getLogger(__name__)
 
 
 GENERATION_KWARGS = DEFAULT_GENERATION_KWARGS
+
+
+def _normalise_stop_sequences(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Sequence):
+        return tuple(str(item) for item in value if str(item))
+    return (str(value),)
+
+
+def _merge_stop_sequences(*sequences: Sequence[str]) -> tuple[str, ...]:
+    merged: list[str] = []
+    for sequence in sequences:
+        for token in sequence:
+            if token and token not in merged:
+                merged.append(token)
+    return tuple(merged)
 
 
 @dataclass(slots=True)
@@ -167,15 +187,6 @@ def _parse_config(argv: Sequence[str] | None = None) -> TaskAConfig:
         prompt_template=args.prompt_template,
         deterministic=not bool(args.non_deterministic),
     )
-
-
-def _sentence_positions(
-    adapter: LoadedAdapter,
-    prompt: str,
-) -> list[int]:
-    return token_positions_for_substring(adapter.adapter, prompt, "Assistant:")
-
-
 def _trial_metadata(config: TaskAConfig, adapter: LoadedAdapter) -> dict[str, Any]:
     return {
         "task": "A",
@@ -243,8 +254,55 @@ def run(config: TaskAConfig) -> None:
     baseline_words = list(word_set.iter_baselines())
     rng = random.Random(config.seed)
 
-    prompt = render_task_a_detection_prompt()
-    token_positions = _sentence_positions(adapter, prompt)
+    chat_messages = task_a_paper_messages()
+    if not chat_messages:
+        raise ValueError("Task A prompt must contain at least one message")
+
+    final_role = chat_messages[-1]["role"]
+    if final_role != "assistant":
+        raise ValueError(
+            f"Task A prompt must end with an assistant turn, found {final_role!r}",
+        )
+
+    if chat_messages[-1].get("content"):
+        LOGGER.warning(
+            "Final assistant message is not empty; trailing content may leak into generation",
+        )
+
+    prompt, helper_stop_sequences = build_chat_prompt(
+        adapter.adapter.tokenizer,
+        chat_messages,
+    )
+
+    prefix_prompt, _ = build_chat_prompt(
+        adapter.adapter.tokenizer,
+        chat_messages[:-1],
+    )
+    assistant_prefix = prompt[len(prefix_prompt) :]
+    if assistant_prefix:
+        occurrence = prefix_prompt.count(assistant_prefix)
+    else:
+        fallback_prefix = "Assistant:"
+        start = prompt.rfind(fallback_prefix)
+        if start == -1:
+            raise ValueError("Unable to derive assistant prefix for Task A prompt")
+        assistant_prefix = fallback_prefix
+        occurrence = prompt[:start].count(fallback_prefix)
+
+    token_positions = token_positions_for_substring(
+        adapter.adapter,
+        prompt,
+        assistant_prefix,
+        occurrence=occurrence,
+    )
+
+    generation_kwargs = dict(GENERATION_KWARGS)
+    combined_stop_sequences = _merge_stop_sequences(
+        helper_stop_sequences,
+        _normalise_stop_sequences(generation_kwargs.get("stop_sequences")),
+    )
+    if combined_stop_sequences:
+        generation_kwargs["stop_sequences"] = combined_stop_sequences
 
     metadata = gather_runtime_metadata(extra=_trial_metadata(config, adapter))
     schema = {
@@ -304,7 +362,7 @@ def run(config: TaskAConfig) -> None:
                             adapter.adapter,
                             prompt,
                             spec,
-                            gen_kwargs=GENERATION_KWARGS,
+                            gen_kwargs=generation_kwargs,
                             enable_injection=injected,
                         )
                         response = result.text

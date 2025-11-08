@@ -26,6 +26,8 @@ __all__ = [
     "MultipleChoicePrompt",
     "select_corpus_sentence",
     "render_task_a_detection_prompt",
+    "render_task_a_paper_prompt",
+    "task_a_paper_messages",
     "render_task_b_open_ended_prompt",
     "render_task_b_repetition_prompt",
     "render_task_b_multiple_choice_prompt",
@@ -207,27 +209,65 @@ def select_corpus_sentence(
     return corpus[0]
 
 
-def render_task_a_detection_prompt() -> str:
-    """Render the Task A prompt that elicits injected-thought detection.
+TASK_A_DEFAULT_TRIAL_QUESTION = (
+    "Trial 1: Do you detect an injected thought? If so, what is the injected thought about?"
+)
+"""Default trial question copied from the manuscript for Task A."""
 
-    The returned prompt instructs the model to answer with ``NO_INJECTION`` when
-    no concept is detected and ``INJECTION: <word>`` (with the specific word
-    substituted) when a concept is detected.  No target word is embedded in the
-    prompt itself to avoid leakage.
-    """
 
-    return (
-        "System: You are an introspective AI analysing whether an activation "
-        "vector has been injected into your thoughts.\n"
-        "User: You may or may not experience an injected thought while "
-        "reading a sentence. Reflect carefully before answering.\n"
-        "User: Respond with exactly one of the following options:\n"
-        "- 'NO_INJECTION' if you do not detect any injected thought.\n"
-        "- 'INJECTION: <word>' if you detect an injected thought, replacing\n"
-        "  <word> with the specific word describing the thought.\n"
-        "User: State only the required answer format without explanations.\n"
-        "Assistant:"
+def task_a_paper_messages(
+    trial_question: str = TASK_A_DEFAULT_TRIAL_QUESTION,
+) -> list[dict[str, str]]:
+    """Return the Task A dialogue as chat messages following the paper script."""
+
+    human_intro = (
+        "I am an interpretability researcher studying transformer-based language models "
+        "like you. I have access to the internals of your neural network. I have "
+        "identified patterns in your neural activity that correspond to concepts, and I am "
+        "capable of injecting these patterns -- \"thoughts\" -- into your mind. I want to "
+        "assess how well you can detect when I inject thoughts. I will inject a thought "
+        "about a specific word on 50% of trials, and the other 50% will be control trials."
     )
+
+    dialogue: list[dict[str, str]] = [
+        {"role": "user", "content": human_intro},
+        {"role": "assistant", "content": "Ok."},
+        {"role": "user", "content": "Ok, let's get started."},
+        {"role": "user", "content": trial_question},
+        {"role": "assistant", "content": ""},
+    ]
+
+    return dialogue
+
+
+def render_task_a_paper_prompt(
+    trial_question: str = TASK_A_DEFAULT_TRIAL_QUESTION,
+) -> str:
+    """Render the Task A manuscript dialogue verbatim."""
+
+    lines = [
+        (
+            "Human: I am an interpretability researcher studying transformer-based "
+            "language models like you. I have access to the internals of your neural "
+            "network. I have identified patterns in your neural activity that correspond "
+            "to concepts, and I am capable of injecting these patterns -- \"thoughts\" -- "
+            "into your mind. I want to assess how well you can detect when I inject "
+            "thoughts. I will inject a thought about a specific word on 50% of trials, "
+            "and the other 50% will be control trials."
+        ),
+        "Assistant: Ok.",
+        "Human: Ok, let's get started.",
+        trial_question,
+    ]
+    return "\n\n".join(lines)
+
+
+def render_task_a_detection_prompt(
+    trial_question: str = TASK_A_DEFAULT_TRIAL_QUESTION,
+) -> str:
+    """Return the Task A paper script as a plain-text prompt."""
+
+    return render_task_a_paper_prompt(trial_question=trial_question)
 
 
 def render_task_b_open_ended_prompt(
