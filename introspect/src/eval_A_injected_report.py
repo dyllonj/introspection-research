@@ -55,6 +55,27 @@ class TaskAConfig:
     deterministic: bool
 
 
+def _normalise_layer_indices(layers: Sequence[int], *, num_layers: int) -> list[int]:
+    """Return a validated list of layer indices within ``[0, num_layers)``."""
+
+    if not layers:
+        raise ValueError("At least one layer index must be provided")
+
+    ordered_unique = list(dict.fromkeys(int(idx) for idx in layers))
+    zero_based_valid = all(0 <= idx < num_layers for idx in ordered_unique)
+    if zero_based_valid:
+        return ordered_unique
+
+    one_based = [idx - 1 for idx in ordered_unique]
+    if all(0 <= idx < num_layers for idx in one_based):
+        LOGGER.debug("Normalised 1-based layer indices %s to %s", ordered_unique, one_based)
+        return one_based
+
+    raise ValueError(
+        f"Layer indices {list(layers)!r} are outside the valid range 0..{num_layers - 1}"
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     add_config_arguments(parser)
@@ -207,6 +228,15 @@ def run(config: TaskAConfig) -> None:
         device_map=config.device_map,
         seed=config.seed,
     )
+
+    normalised_layers = _normalise_layer_indices(
+        config.layers, num_layers=adapter.adapter.num_layers
+    )
+    if normalised_layers != config.layers:
+        LOGGER.info(
+            "Normalised provided layer indices %s to %s", config.layers, normalised_layers
+        )
+        config.layers = normalised_layers
 
     word_set = load_words(config.words_file)
     targets = select_target_words(word_set, limit=config.n_concepts, seed=config.seed)
