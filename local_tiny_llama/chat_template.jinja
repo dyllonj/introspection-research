@@ -1,0 +1,7 @@
+{% for message in messages %}
+{% if message['role'] == 'user' %}<human>{{ message['content'] }}</human>
+{% elif message['role'] == 'assistant' %}<assistant>{{ message['content'] }}</assistant>
+{% elif message['role'] == 'system' %}<system>{{ message['content'] }}</system>
+{% else %}<{{ message['role'] }}>{{ message['content'] }}</{{ message['role'] }}>{% endif %}
+{% endfor %}
+{% if add_generation_prompt %}<assistant>{% endif %}

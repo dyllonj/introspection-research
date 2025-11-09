@@ -257,7 +257,8 @@ def render_task_a_paper_prompt(
         ),
         "Assistant: Ok.",
         "Human: Ok, let's get started.",
-        trial_question,
+        f"Human: {trial_question}",
+        "Assistant:",
     ]
     return "\n\n".join(lines)
 
