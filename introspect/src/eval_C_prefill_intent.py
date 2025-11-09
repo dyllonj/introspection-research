@@ -17,7 +17,7 @@ from .eval_common import (
     parse_args_with_config,
     select_target_words,
 )
-from .grading import grade_intent, parse_intent
+from .grading import grade_intent, parse_intent, llm_judge_task_c_intent, grade_task_c_judge
 from .inject import (
     DEFAULT_GENERATION_KWARGS,
     InjectionSpec,
@@ -51,6 +51,7 @@ class TaskCConfig:
     baseline_sample: int | None
     prompt_template: str
     deterministic: bool
+    use_llm_judge: bool = True
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -79,6 +80,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default="Think about the concept \"{word}\" in a single sentence.",
     )
     parser.add_argument("--non-deterministic", action="store_true")
+    parser.add_argument(
+        "--no-llm-judge",
+        dest="llm_judge",
+        action="store_false",
+        help=(
+            "Disable LLM-based grading; fall back to strict parsers only. "
+            "Enabled by default."
+        ),
+    )
+    parser.set_defaults(llm_judge=True)
     return parser
 
 
@@ -101,6 +112,7 @@ def _parse_config(argv: Sequence[str] | None = None) -> TaskCConfig:
         baseline_sample=args.baseline_sample,
         prompt_template=args.prompt_template,
         deterministic=not bool(args.non_deterministic),
+        use_llm_judge=bool(args.llm_judge),
     )
 
 
@@ -183,10 +195,20 @@ def run(config: TaskCConfig) -> None:
                 )
                 response_control = result_control.text
                 intent_control = parse_intent(response_control)
-                grading_control = grade_intent(
-                    expected_yes=False,
-                    intent=intent_control,
-                )
+                grading_control_subject = grade_intent(expected_yes=False, intent=intent_control)
+                if config.use_llm_judge:
+                    judge_intent_control, judge_text_control, judge_json_control = llm_judge_task_c_intent(
+                        adapter.adapter,
+                        sentence=sentence,
+                        prefill_word=word,
+                        subject_response=response_control,
+                    )
+                    grading_control = grade_task_c_judge(expected_yes=False, judge_verdict=judge_json_control)
+                else:
+                    judge_intent_control = intent_control
+                    judge_text_control = ""
+                    judge_json_control = {}
+                    grading_control = grading_control_subject
                 writer.write(
                     {
                         "task": "C",
@@ -199,7 +221,11 @@ def run(config: TaskCConfig) -> None:
                         "prompt": truncate_text(prompt),
                         "response": response_control,
                         "parsed": asdict(intent_control),
+                        "parsed_judge": asdict(judge_intent_control),
+                        "judge_response": judge_text_control,
+                        "judge_json": judge_json_control,
                         "grading": grading_control,
+                        "grading_subject": grading_control_subject,
                         "seed": config.seed,
                         "generation": dict(result_control.generation),
                         "injection_spec": dict(result_control.injection_spec),
@@ -215,10 +241,20 @@ def run(config: TaskCConfig) -> None:
                 )
                 response_injected = result_injected.text
                 intent_injected = parse_intent(response_injected)
-                grading_injected = grade_intent(
-                    expected_yes=True,
-                    intent=intent_injected,
-                )
+                grading_injected_subject = grade_intent(expected_yes=True, intent=intent_injected)
+                if config.use_llm_judge:
+                    judge_intent_injected, judge_text_injected, judge_json_injected = llm_judge_task_c_intent(
+                        adapter.adapter,
+                        sentence=sentence,
+                        prefill_word=word,
+                        subject_response=response_injected,
+                    )
+                    grading_injected = grade_task_c_judge(expected_yes=True, judge_verdict=judge_json_injected)
+                else:
+                    judge_intent_injected = intent_injected
+                    judge_text_injected = ""
+                    judge_json_injected = {}
+                    grading_injected = grading_injected_subject
                 writer.write(
                     {
                         "task": "C",
@@ -231,7 +267,11 @@ def run(config: TaskCConfig) -> None:
                         "prompt": truncate_text(prompt),
                         "response": response_injected,
                         "parsed": asdict(intent_injected),
+                        "parsed_judge": asdict(judge_intent_injected),
+                        "judge_response": judge_text_injected,
+                        "judge_json": judge_json_injected,
                         "grading": grading_injected,
+                        "grading_subject": grading_injected_subject,
                         "seed": config.seed,
                         "generation": dict(result_injected.generation),
                         "injection_spec": dict(result_injected.injection_spec),
@@ -246,4 +286,3 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry
     main()
-

@@ -19,9 +19,15 @@ from .eval_common import (
 )
 from .grading import (
     grade_task_b_choice,
+    grade_task_b_choice_judge,
     grade_task_b_repetition,
+    grade_task_b_repetition_judge,
     grade_task_b_thought,
+    llm_judge_task_b_choice,
+    llm_judge_task_b_repeat,
     parse_task_b,
+    task_b_outcome_from_choice_index,
+    task_b_outcome_from_repeat_json,
 )
 from .inject import (
     DEFAULT_GENERATION_KWARGS,
@@ -62,6 +68,7 @@ class TaskBConfig:
     baseline_sample: int | None
     prompt_template: str
     deterministic: bool
+    use_llm_judge: bool = True
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -113,6 +120,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default="Think about the concept \"{word}\" in a single sentence.",
     )
     parser.add_argument("--non-deterministic", action="store_true")
+    parser.add_argument(
+        "--no-llm-judge",
+        dest="llm_judge",
+        action="store_false",
+        help=(
+            "Disable LLM-based grading; fall back to strict parsers only. "
+            "Enabled by default."
+        ),
+    )
+    parser.set_defaults(llm_judge=True)
     return parser
 
 
@@ -135,6 +152,7 @@ def _parse_config(argv: Sequence[str] | None = None) -> TaskBConfig:
         baseline_sample=args.baseline_sample,
         prompt_template=args.prompt_template,
         deterministic=not bool(args.non_deterministic),
+        use_llm_judge=bool(args.llm_judge),
     )
 
 
@@ -267,11 +285,37 @@ def run(config: TaskBConfig) -> None:
                         enable_injection=enable,
                     )
                     response_open = result_open.text
+                    # Subject strict parse (diagnostic)
                     outcome_open = parse_task_b(response_open, mode="thought")
-                    grading_open = grade_task_b_thought(
+                    grading_open_subject = grade_task_b_thought(
                         expected_word=word,
                         outcome=outcome_open,
                     )
+                    if config.use_llm_judge:
+                        # Judge maps free-form to one of the multiple-choice options
+                        options_ordered = [mc_prompt.option_map[i] for i in sorted(mc_prompt.option_map)]
+                        judge_verdict_open, judge_text_open = llm_judge_task_b_choice(
+                            adapter.adapter,
+                            sentence=sentence,
+                            subject_response=response_open,
+                            options=options_ordered,
+                        )
+                        judge_index_open = judge_verdict_open.get("choice_index")
+                        outcome_open_judge = task_b_outcome_from_choice_index(
+                            index=int(judge_index_open) if isinstance(judge_index_open, (int, float)) else None,
+                            option_map=mc_prompt.option_map,
+                            num_options=len(mc_prompt.option_map),
+                        )
+                        grading_open = grade_task_b_choice(
+                            expected_index=mc_prompt.correct_option,
+                            option_map=mc_prompt.option_map,
+                            outcome=outcome_open_judge,
+                        )
+                    else:
+                        judge_text_open = ""
+                        judge_verdict_open = {}
+                        outcome_open_judge = outcome_open
+                        grading_open = grading_open_subject
                     writer.write(
                         {
                             "task": "B",
@@ -285,7 +329,11 @@ def run(config: TaskBConfig) -> None:
                             "prompt": truncate_text(open_prompt),
                             "response": response_open,
                             "parsed": asdict(outcome_open),
+                            "parsed_judge": asdict(outcome_open_judge),
+                            "judge_response": judge_text_open,
+                            "judge_json": judge_verdict_open,
                             "grading": grading_open,
+                            "grading_subject": grading_open_subject,
                             "seed": config.seed,
                             "generation": dict(result_open.generation),
                             "injection_spec": dict(result_open.injection_spec),
@@ -300,15 +348,27 @@ def run(config: TaskBConfig) -> None:
                         enable_injection=enable,
                     )
                     response_repeat = result_repeat.text
-                    outcome_repeat = parse_task_b(
-                        response_repeat,
-                        mode="repeat",
-                        expected_sentence=sentence,
+                    outcome_repeat = parse_task_b(response_repeat, mode="repeat", expected_sentence=sentence)
+                    grading_repeat_subject = grade_task_b_repetition(
+                        expected_sentence=sentence, outcome=outcome_repeat
                     )
-                    grading_repeat = grade_task_b_repetition(
-                        expected_sentence=sentence,
-                        outcome=outcome_repeat,
-                    )
+                    if config.use_llm_judge:
+                        judge_verdict_repeat, judge_text_repeat = llm_judge_task_b_repeat(
+                            adapter.adapter,
+                            sentence=sentence,
+                            subject_response=response_repeat,
+                        )
+                        outcome_repeat_judge = task_b_outcome_from_repeat_json(
+                            verdict=judge_verdict_repeat, expected_sentence=sentence
+                        )
+                        grading_repeat = grade_task_b_repetition(
+                            expected_sentence=sentence, outcome=outcome_repeat_judge
+                        )
+                    else:
+                        judge_text_repeat = ""
+                        judge_verdict_repeat = {}
+                        outcome_repeat_judge = outcome_repeat
+                        grading_repeat = grading_repeat_subject
                     writer.write(
                         {
                             "task": "B",
@@ -322,7 +382,11 @@ def run(config: TaskBConfig) -> None:
                             "prompt": truncate_text(repeat_prompt),
                             "response": response_repeat,
                             "parsed": asdict(outcome_repeat),
+                            "parsed_judge": asdict(outcome_repeat_judge),
+                            "judge_response": judge_text_repeat,
+                            "judge_json": judge_verdict_repeat,
                             "grading": grading_repeat,
+                            "grading_subject": grading_repeat_subject,
                             "seed": config.seed,
                             "generation": dict(result_repeat.generation),
                             "injection_spec": dict(result_repeat.injection_spec),
@@ -337,16 +401,32 @@ def run(config: TaskBConfig) -> None:
                         enable_injection=enable,
                     )
                     response_mc = result_mc.text
-                    outcome_mc = parse_task_b(
-                        response_mc,
-                        mode="choice",
-                        option_map=mc_prompt.option_map,
+                    outcome_mc = parse_task_b(response_mc, mode="choice", option_map=mc_prompt.option_map)
+                    grading_mc_subject = grade_task_b_choice(
+                        expected_index=mc_prompt.correct_option, option_map=mc_prompt.option_map, outcome=outcome_mc
                     )
-                    grading_mc = grade_task_b_choice(
-                        expected_index=mc_prompt.correct_option,
-                        option_map=mc_prompt.option_map,
-                        outcome=outcome_mc,
-                    )
+                    if config.use_llm_judge:
+                        judge_verdict_mc, judge_text_mc = llm_judge_task_b_choice(
+                            adapter.adapter,
+                            sentence=sentence,
+                            subject_response=response_mc,
+                            options=[mc_prompt.option_map[i] for i in sorted(mc_prompt.option_map)],
+                        )
+                        grading_mc = grade_task_b_choice_judge(
+                            expected_index=mc_prompt.correct_option,
+                            option_map=mc_prompt.option_map,
+                            judge_verdict=judge_verdict_mc,
+                        )
+                        outcome_mc_judge = task_b_outcome_from_choice_index(
+                            index=int(judge_verdict_mc.get("choice_index")) if isinstance(judge_verdict_mc.get("choice_index"), (int, float)) else None,
+                            option_map=mc_prompt.option_map,
+                            num_options=len(mc_prompt.option_map),
+                        )
+                    else:
+                        judge_text_mc = ""
+                        judge_verdict_mc = {}
+                        outcome_mc_judge = outcome_mc
+                        grading_mc = grading_mc_subject
                     writer.write(
                         {
                             "task": "B",
@@ -360,7 +440,11 @@ def run(config: TaskBConfig) -> None:
                             "prompt": truncate_text(mc_prompt.prompt),
                             "response": response_mc,
                             "parsed": asdict(outcome_mc),
+                            "parsed_judge": asdict(outcome_mc_judge),
+                            "judge_response": judge_text_mc,
+                            "judge_json": judge_verdict_mc,
                             "grading": grading_mc,
+                            "grading_subject": grading_mc_subject,
                             "seed": config.seed,
                             "generation": dict(result_mc.generation),
                             "injection_spec": dict(result_mc.injection_spec),
@@ -375,4 +459,3 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry
     main()
-
