@@ -248,6 +248,57 @@ def _activation_for_prompt(
     return final_states.detach().to(torch.float32).cpu()
 
 
+def _activations_for_prompts_batched(
+    adapter: BaseModelAdapter,
+    layer_idx: int,
+    prompts: Sequence[str],
+    batch_size: int = 32,
+) -> list[torch.Tensor]:
+    """Extract activations for multiple prompts using batched forward passes.
+
+    This is significantly faster than calling _activation_for_prompt in a loop
+    because it processes multiple prompts in parallel on the GPU.
+    """
+    all_activations = []
+    device = next(adapter.model.parameters()).device
+
+    for i in range(0, len(prompts), batch_size):
+        batch_prompts = prompts[i:i + batch_size]
+
+        # Tokenize with padding for batching
+        tokenized = adapter.tokenizer(
+            batch_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+        )
+        inputs = {key: tensor.to(device) for key, tensor in tokenized.items()}
+
+        # Capture residuals for the batch
+        residual = _capture_residual(adapter, layer_idx, inputs)
+
+        # Extract final token for each sequence
+        if "attention_mask" in inputs:
+            lengths = inputs["attention_mask"].sum(dim=1) - 1
+        else:
+            lengths = torch.full((residual.size(0),), residual.size(1) - 1, device=residual.device)
+
+        index = lengths.long().clamp(min=0)
+        batch_indices = torch.arange(residual.size(0), device=residual.device)
+        final_states = residual[batch_indices, index, :]
+
+        # Move to CPU and convert to list of individual tensors
+        final_states_cpu = final_states.detach().to(torch.float32).cpu()
+        for j in range(final_states_cpu.size(0)):
+            all_activations.append(final_states_cpu[j])
+
+        # Clear GPU cache after each batch to prevent memory fragmentation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return all_activations
+
+
 def build_concept_vector(
     adapter: BaseModelAdapter,
     layer_idx: int,
@@ -272,23 +323,30 @@ def build_concept_vector(
     if not baseline_words:
         raise ValueError("At least one baseline word is required")
 
-    prompts = [_prompt_from_template(prompt_template, target_word)]
-    target_acts = [
-        _activation_for_prompt(adapter, layer_idx, prompt)
-        for prompt in prompts
-    ]
-
     sampled_baselines = _select_baselines(
         baseline_words, baseline_sample_size, rng=rng
     )
-    baseline_acts = [
-        _activation_for_prompt(
-            adapter,
-            layer_idx,
-            _prompt_from_template(prompt_template, baseline),
-        )
+
+    LOGGER.info(
+        "Building concept vector for '%s' at layer %d with %d baselines",
+        target_word,
+        layer_idx,
+        len(sampled_baselines),
+    )
+
+    # Extract target activation (single prompt, no batching needed)
+    target_prompt = _prompt_from_template(prompt_template, target_word)
+    target_acts = [_activation_for_prompt(adapter, layer_idx, target_prompt)]
+
+    # Extract baseline activations using batched processing for speed
+    LOGGER.debug("Processing %d baseline prompts in batches", len(sampled_baselines))
+    baseline_prompts = [
+        _prompt_from_template(prompt_template, baseline)
         for baseline in sampled_baselines
     ]
+    baseline_acts = _activations_for_prompts_batched(
+        adapter, layer_idx, baseline_prompts, batch_size=32
+    )
 
     target_stack = torch.stack(target_acts)
     baseline_stack = torch.stack(baseline_acts)
@@ -304,6 +362,13 @@ def build_concept_vector(
         raise ValueError("Cannot normalize zero vector; adjust baseline set")
 
     normalized = (vector / norm).to(torch.float32).squeeze()
+
+    # Clean up GPU memory after vector construction
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    LOGGER.info("Successfully built concept vector for '%s'", target_word)
+
     if return_sampled_baselines:
         return normalized, sampled_baselines
     return normalized
