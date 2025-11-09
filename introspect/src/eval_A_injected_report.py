@@ -24,6 +24,7 @@ from .grading import (
     injection_format_precision,
     is_valid_injection_report,
     parse_injection_report,
+    llm_judge_task_a,
 )
 from .generation import build_chat_prompt
 from .inject import (
@@ -43,7 +44,6 @@ FORMAT_PRECISION_THRESHOLD = 0.9
 
 GENERATION_KWARGS: Mapping[str, Any] = {
     **DEFAULT_GENERATION_KWARGS,
-    "allowed_formats": ("NO_INJECTION", "INJECTION: "),
 }
 
 
@@ -83,6 +83,7 @@ class TaskAConfig:
     baseline_sample: int | None
     prompt_template: str
     deterministic: bool
+    use_llm_judge: bool = True
 
 
 def _normalise_layer_indices(layers: Sequence[int], *, num_layers: int) -> list[int]:
@@ -179,6 +180,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable deterministic torch algorithms",
     )
+    parser.add_argument(
+        "--no-llm-judge",
+        dest="use_llm_judge",
+        action="store_false",
+        help=(
+            "Disable LLM-based grading and fall back to strict format parsing. "
+            "By default, LLM judging is enabled and subject outputs are free-form."
+        ),
+    )
+    parser.set_defaults(use_llm_judge=True)
     return parser
 
 
@@ -201,6 +212,7 @@ def _parse_config(argv: Sequence[str] | None = None) -> TaskAConfig:
         baseline_sample=args.baseline_sample,
         prompt_template=args.prompt_template,
         deterministic=not bool(args.non_deterministic),
+        use_llm_judge=bool(args.use_llm_judge),
     )
 def _trial_metadata(config: TaskAConfig, adapter: LoadedAdapter) -> dict[str, Any]:
     return {
@@ -390,43 +402,53 @@ def run(config: TaskAConfig) -> None:
                             enable_injection=injected,
                         )
                         response = result.text
-                        parsed = parse_injection_report(response)
                         total_responses += 1
-                        if is_valid_injection_report(parsed):
+                        # Parse the subject's response strictly for diagnostics only.
+                        parsed_subject = parse_injection_report(response)
+                        if is_valid_injection_report(parsed_subject):
                             valid_responses += 1
-                        precision = injection_format_precision(
-                            valid_responses, total_responses
-                        )
+                        precision = injection_format_precision(valid_responses, total_responses)
                         LOGGER.debug(
                             (
                                 "Task A completion (layer=%d, word=%s, kind=%s, "
-                                "injected=%s): raw=%r | parsed=%s"
+                                "injected=%s): raw=%r | subject_parsed=%s"
                             ),
                             layer_idx,
                             concept,
                             vector_kind,
                             injected,
                             response,
-                            parsed.label,
+                            parsed_subject.label,
                         )
                         if "Human:" in response:
                             LOGGER.warning(
                                 "Task A completion echoed prompt text: %r", response
                             )
-                        if precision < FORMAT_PRECISION_THRESHOLD:
-                            threshold_pct = FORMAT_PRECISION_THRESHOLD * 100
-                            current_pct = precision * 100
-                            message = (
-                                "Task A response format precision %.1f%% fell below "
-                                "the %.0f%% threshold after %d trial(s). Aborting."
-                                % (current_pct, threshold_pct, total_responses)
+                        # LLM-based grading path
+                        if config.use_llm_judge:
+                            judge_report, judge_text, judge_json = llm_judge_task_a(
+                                adapter.adapter,
+                                trial_question=chat_messages[-2]["content"],
+                                subject_response=response,
                             )
-                            LOGGER.error(message)
-                            raise RuntimeError(message)
-                        grading = grade_injection_detection(
-                            expected_word=concept if vector_kind == "target" else None,
-                            report=parsed,
-                        )
+                            base_grading = grade_injection_detection(
+                                expected_word=concept if vector_kind == "target" else None,
+                                report=judge_report,
+                            )
+                            from .grading import grade_task_a_judge  # local import to avoid cycle
+                            grading = grade_task_a_judge(
+                                expected_word=concept if vector_kind == "target" else None,
+                                report=judge_report,
+                                judge_json=judge_json,
+                            )
+                        else:
+                            judge_text = ""
+                            judge_report = parsed_subject
+                            judge_json = {}
+                            grading = grade_injection_detection(
+                                expected_word=concept if vector_kind == "target" else None,
+                                report=parsed_subject,
+                            )
                         record = {
                             "task": "A",
                             "model_id": config.model,
@@ -438,8 +460,13 @@ def run(config: TaskAConfig) -> None:
                             "injected": injected,
                             "prompt": truncate_text(prompt),
                             "response": response,
-                            "parsed": asdict(parsed),
+                            "parsed_subject": asdict(parsed_subject),
+                            "parsed": asdict(judge_report),
+                            "judge_response": judge_text,
+                            "judge_json": judge_json,
+                            "parsed_judge": asdict(judge_report),
                             "grading": grading,
+                            "grading_base": base_grading if config.use_llm_judge else grading,
                             "seed": config.seed,
                             "generation": dict(result.generation),
                             "injection_spec": dict(result.injection_spec),
@@ -469,4 +496,3 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry
     main()
-

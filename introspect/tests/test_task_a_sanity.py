@@ -101,6 +101,7 @@ def test_task_a_chat_prompt_sanity(tmp_path: Path, monkeypatch, caplog: pytest.L
         baseline_sample=None,
         prompt_template="Think about the concept '{word}'.",
         deterministic=True,
+        use_llm_judge=False,
     )
 
     with caplog.at_level(logging.DEBUG, logger="introspect.src.eval_A_injected_report"):
