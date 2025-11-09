@@ -139,7 +139,10 @@ def build_chat_prompt(
     assistant_pending = final_role == "assistant" and final_content == ""
     add_generation_prompt = not assistant_pending
 
-    if hasattr(tokenizer, "apply_chat_template"):
+    has_method = hasattr(tokenizer, "apply_chat_template")
+    has_template = hasattr(tokenizer, "chat_template") and tokenizer.chat_template is not None
+
+    if has_method and has_template:
         prompt = tokenizer.apply_chat_template(  # type: ignore[call-arg]
             normalised,
             tokenize=False,
