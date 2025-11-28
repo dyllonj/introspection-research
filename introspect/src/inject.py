@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Mapping, MutableMapping
+from typing import Any, Callable, Iterator, Literal, Mapping, MutableMapping
 
 import torch
 from torch.utils.hooks import RemovableHandle
@@ -35,6 +35,7 @@ __all__ = [
     "inject_once",
     "prepare_generation_inputs",
     "make_residual_hook",
+    "resolve_injection_positions",
     "token_positions_from_spans",
     "token_positions_after",
     "token_positions_for_substring",
@@ -417,6 +418,134 @@ def token_positions_after(
     return token_positions_from_spans(adapter, text, [span])
 
 
+def _candidate_markers(tokenizer: Any) -> list[str]:
+    """Return possible assistant markers derived from the tokenizer metadata."""
+
+    candidates: list[str] = []
+
+    for attr in (
+        "assistant_token",
+        "assistant_text",
+        "assistant_special_token",
+    ):
+        value = getattr(tokenizer, attr, None)
+        if isinstance(value, str) and value:
+            candidates.append(value)
+
+    special = getattr(tokenizer, "special_tokens_map", None)
+    if isinstance(special, Mapping):
+        for key, value in special.items():
+            if "assistant" in key and isinstance(value, str) and value:
+                candidates.append(value)
+
+    for attr in ("assistant_token_id",):
+        token_id = getattr(tokenizer, attr, None)
+        if isinstance(token_id, int):
+            try:
+                decoded = tokenizer.decode([token_id])  # type: ignore[arg-type]
+            except Exception:  # pragma: no cover - defensive
+                continue
+            if decoded:
+                candidates.append(decoded)
+
+    candidates.extend(
+        [
+            "\nAssistant:",
+            "Assistant:",
+            "<|im_start|>assistant",
+            "<|im_start|> assistant",
+            "<|start_header_id|>assistant",
+            "<|assistant|>",
+        ]
+    )
+
+    # Preserve order while deduplicating
+    seen: set[str] = set()
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            unique.append(candidate)
+            seen.add(candidate)
+    return unique
+
+
+def _auto_detect_assistant_marker(tokenizer: Any, prompt: str) -> str | None:
+    """Best-effort detection of the assistant prefix marker within ``prompt``."""
+
+    for candidate in _candidate_markers(tokenizer):
+        index = prompt.rfind(candidate)
+        if index != -1:
+            return candidate
+
+    lowered = prompt.lower()
+    idx = lowered.rfind("assistant")
+    if idx != -1:
+        end_idx = prompt.find("\n", idx)
+        end_idx = len(prompt) if end_idx == -1 else end_idx
+        return prompt[idx:end_idx]
+
+    return None
+
+
+def resolve_injection_positions(
+    adapter: BaseModelAdapter,
+    prompt: str,
+    *,
+    mode: Literal["prefix", "suffix"] = "prefix",
+    assistant_marker: str | None = None,
+    occurrence: int | None = None,
+) -> tuple[list[int], int | None]:
+    """Return token positions for injection and the suffix start index.
+
+    The paper uses a prefix anchor at the assistant marker (typically the ``:`` token
+    preceding the assistant turn). Some experiments also inject on the suffix so the
+    delta continues to affect newly generated tokens. This helper returns a
+    deterministic set of positions for both modes while auto-detecting the assistant
+    marker when possible.
+    """
+
+    tokenized = adapter.tokenizer(prompt, return_tensors="pt")
+    input_ids = tokenized.get("input_ids")
+    prompt_len: int | None = None
+    if isinstance(input_ids, torch.Tensor):
+        prompt_len = int(input_ids.shape[1])
+
+    if mode not in {"prefix", "suffix"}:
+        raise ValueError("mode must be 'prefix' or 'suffix'")
+
+    resolved_marker = assistant_marker or _auto_detect_assistant_marker(adapter.tokenizer, prompt)
+    positions: list[int] = []
+
+    if mode == "prefix":
+        if resolved_marker is None:
+            if prompt_len is not None and prompt_len > 0:
+                positions = [prompt_len - 1]
+            else:
+                positions = []
+        else:
+            try:
+                if occurrence is None:
+                    occ_idx = prompt.count(resolved_marker) - 1
+                    occ_idx = max(0, occ_idx)
+                else:
+                    occ_idx = occurrence
+                positions = token_positions_for_substring(
+                    adapter,
+                    prompt,
+                    resolved_marker,
+                    occurrence=occ_idx,
+                )
+            except ValueError:
+                if prompt_len is not None and prompt_len > 0:
+                    positions = [prompt_len - 1]
+                else:
+                    positions = []
+    else:  # suffix mode
+        positions = []
+
+    return positions, prompt_len
+
+
 def _normalize_positions(
     token_positions: TokenPositions | None,
 ) -> TokenPositions:
@@ -525,4 +654,3 @@ def inject_once(
         generation=generation_summary,
         injection_spec=describe_injection_spec(resolved_spec),
     )
-
