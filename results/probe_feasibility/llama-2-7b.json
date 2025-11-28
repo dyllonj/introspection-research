@@ -1,0 +1,36 @@
+{
+  "model": "meta-llama/Llama-2-7b-chat-hf",
+  "layers": {
+    "19": {
+      "accuracy": 0.8333333333333334,
+      "auroc": 1.0,
+      "tpr": 0.6666666666666666,
+      "fpr": 0.0,
+      "f1": 0.8,
+      "n_train": 42,
+      "n_test": 18
+    },
+    "21": {
+      "accuracy": 0.5,
+      "auroc": 1.0,
+      "tpr": 1.0,
+      "fpr": 1.0,
+      "f1": 0.6666666666666666,
+      "n_train": 42,
+      "n_test": 18
+    },
+    "23": {
+      "accuracy": 0.5,
+      "auroc": 1.0,
+      "tpr": 0.0,
+      "fpr": 0.0,
+      "f1": 0.0,
+      "n_train": 42,
+      "n_test": 18
+    }
+  },
+  "recommendation": "MODERATE_SIGNAL",
+  "best_layer": 19,
+  "best_accuracy": 0.8333333333333334,
+  "message": "Probe achieves 83.3% accuracy at layer 19. Moderate signal - proceed with caution."
+}

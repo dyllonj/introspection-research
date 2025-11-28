@@ -1,0 +1,36 @@
+{
+  "model": "meta-llama/Llama-3.1-8B-Instruct",
+  "layers": {
+    "19": {
+      "accuracy": 1.0,
+      "auroc": 1.0,
+      "tpr": 1.0,
+      "fpr": 0.0,
+      "f1": 1.0,
+      "n_train": 42,
+      "n_test": 18
+    },
+    "21": {
+      "accuracy": 1.0,
+      "auroc": 1.0,
+      "tpr": 1.0,
+      "fpr": 0.0,
+      "f1": 1.0,
+      "n_train": 42,
+      "n_test": 18
+    },
+    "23": {
+      "accuracy": 0.8333333333333334,
+      "auroc": 1.0,
+      "tpr": 0.6666666666666666,
+      "fpr": 0.0,
+      "f1": 0.8,
+      "n_train": 42,
+      "n_test": 18
+    }
+  },
+  "recommendation": "STRONG_SIGNAL",
+  "best_layer": 19,
+  "best_accuracy": 1.0,
+  "message": "Probe achieves 100.0% accuracy at layer 19. Strong signal - proceed with DPO."
+}

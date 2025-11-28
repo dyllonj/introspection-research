@@ -1,0 +1,36 @@
+{
+  "model": "Qwen/Qwen2.5-7B-Instruct",
+  "layers": {
+    "16": {
+      "accuracy": 1.0,
+      "auroc": 1.0,
+      "tpr": 1.0,
+      "fpr": 0.0,
+      "f1": 1.0,
+      "n_train": 42,
+      "n_test": 18
+    },
+    "18": {
+      "accuracy": 1.0,
+      "auroc": 1.0,
+      "tpr": 1.0,
+      "fpr": 0.0,
+      "f1": 1.0,
+      "n_train": 42,
+      "n_test": 18
+    },
+    "20": {
+      "accuracy": 1.0,
+      "auroc": 1.0,
+      "tpr": 1.0,
+      "fpr": 0.0,
+      "f1": 1.0,
+      "n_train": 42,
+      "n_test": 18
+    }
+  },
+  "recommendation": "STRONG_SIGNAL",
+  "best_layer": 16,
+  "best_accuracy": 1.0,
+  "message": "Probe achieves 100.0% accuracy at layer 16. Strong signal - proceed with DPO."
+}
