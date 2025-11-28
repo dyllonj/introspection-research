@@ -15,6 +15,26 @@ models:
     adapter: LlamaAdapter
     dtype: bf16
     context_len: 4096
+  - id: meta-llama/Llama-3.1-8B-Instruct
+    adapter: LlamaAdapter
+    dtype: bf16
+    context_len: 8192
+  - id: Qwen/Qwen2.5-7B-Instruct
+    adapter: QwenAdapter
+    dtype: bf16
+    context_len: 8192
+  - id: mistralai/Mistral-7B-Instruct-v0.3
+    adapter: MistralAdapter
+    dtype: bf16
+    context_len: 8192
+  - id: mistralai/Mixtral-8x7B-Instruct-v0.1
+    adapter: MistralAdapter
+    dtype: bf16
+    context_len: 32768
+  - id: deepseek-ai/DeepSeek-V2-Lite
+    adapter: QwenAdapter
+    dtype: bf16
+    context_len: 8192
   - id: mistralai/Mistral-7B-Instruct-v0.2
     adapter: MistralAdapter
   - id: tiiuae/falcon-7b
