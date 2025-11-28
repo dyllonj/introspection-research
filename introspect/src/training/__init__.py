@@ -14,6 +14,7 @@ from .probes import (
     evaluate_probe,
     train_injection_probe,
 )
+from .split_concepts import split_concepts
 
 __all__ = [
     "IntrospectionSample",
@@ -26,4 +27,5 @@ __all__ = [
     "evaluate_probe",
     "train_injection_probe",
     "IntrospectionMetrics",
+    "split_concepts",
 ]

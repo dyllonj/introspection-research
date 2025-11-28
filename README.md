@@ -37,6 +37,10 @@ introspect/
    ```bash
    pip install -e .[hydra]
    ```
+5. (Optional) Install training extras (TRL/PEFT/datasets/sklearn) for Phase‑2 fine-tuning:
+   ```bash
+   pip install -e .[train]
+   ```
 
 ## Dependencies & environment notes
 - Core requirements are pinned in `pyproject.toml` (`torch>=2.2`, `transformers>=4.43`, `accelerate>=0.30`, plus numpy/pandas/matplotlib/pyyaml/tqdm/pytest/ruff).
@@ -57,7 +61,15 @@ introspect/
 - **Model registry:** `introspect/registry/models.yaml` maps model identifiers to adapter classes, default dtypes, and context lengths.
 - **Concept vocabulary:** `introspect/concepts/words.yaml` stores `targets` and `baselines` used to build contrastive vectors. Limit subsets with CLI flags such as `--limit-targets`.
 - **CLI configuration files:** All CLIs support `--config`, `--config-dir`, and `--config-name` for Hydra/YAML overrides.
-- **Vector cache:** Concept vectors are stored as `.pt` files beneath `introspect/results/vectors/<model>/<layer>/<word>.pt` with cached metadata.
+- **Vector cache:** Concept vectors are stored as `.npy` files beneath `introspect/results/vectors/<model>/layer####_<word>.npy` with cached metadata.
+
+## Optional Phase‑2: introspection fine-tuning (DPO)
+- **Probe before you train.** Check that injection is linearly separable with a simple probe: `python -m introspect.src.training.probe_feasibility --model <model> --n-concepts 20 --injection-mode prefix`.
+- **Deterministic concept split.** Reserve held-out concepts once and reuse: `python -m introspect.src.training.split_concepts --n-holdout 10 --seed 42 --output results/concept_split.json`.
+- **Generate preference data.** Uses Task A signals to build chosen/rejected pairs: `python -m introspect.src.training.train_dpo --model <model> --generate-only --injection-mode prefix --holdout-concepts results/concept_split.json`.
+- **Run DPO (LoRA by default).** `python -m introspect.src.training.train_dpo --model <model> --injection-mode prefix --output-dir results/introspection_dpo/<model>/`.
+- **Evaluate on held-out concepts.** `python -m introspect.src.training.evaluate_introspection --model results/introspection_dpo/<model>/final_model --holdout-list results/concept_split.json --injection-mode prefix`.
+- **Anchoring modes.** `--injection-mode prefix` injects on the assistant prefix (paper-faithful), while `--injection-mode suffix` attaches the vector to generated tokens; both rely on `resolve_injection_positions` to anchor spans via the chat template.
 - **Task results:** Evaluation scripts default to `introspect/results/task_*.jsonl`; the sweep utility nests outputs under `results/<model_slug>/task_X.jsonl` and creates `plots/` subfolders.
 - **Plots:** `introspect/src/plotting.py` produces Task A heatmaps, Task B/C bar charts, and Task D activation curves saved as PNG/SVG files.
 

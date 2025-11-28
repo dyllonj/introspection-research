@@ -13,7 +13,7 @@ import torch
 from ..eval_common import ensure_vector, load_words, select_target_words
 from ..inject import InjectionSpec, inject_once, resolve_injection_positions
 from ..prompts import task_a_paper_messages
-from ..vectors import ConceptWordSet
+from ..vectors import ConceptWordSet, DEFAULT_WORDS_PATH, cache_path
 from ..generation import build_chat_prompt
 
 LOGGER = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ class PreferenceDataConfig:
 
     # Concept selection
     n_concepts: int = 50
-    words_file: Path = Path("concepts/words.yaml")
+    words_file: Path = Path(DEFAULT_WORDS_PATH)
     target_words: list[str] | None = None
     holdout_concepts: list[str] | None = None
 
@@ -175,30 +175,25 @@ def generate_task_a_preference_pairs(
 
     for concept in target_words:
         for layer_idx in config.layers:
-            if config.rebuild_vectors or vector_cache_dir is None:
-                vector = ensure_vector(
-                    adapter=adapter,
-                    model_id=getattr(adapter.model.config, "_name_or_path", "unknown"),
-                    layer_idx=layer_idx,
-                    word=concept,
-                    cache_dir=vector_cache_dir or "results/vectors",
-                    baseline_words=baseline_words,
-                    prompt_template=config.prompt_template,
-                    baseline_sample_size=config.baseline_sample_size,
-                    rng=rng,
-                )
-            else:
-                vector = ensure_vector(
-                    adapter=adapter,
-                    model_id=getattr(adapter.model.config, "_name_or_path", "unknown"),
-                    layer_idx=layer_idx,
-                    word=concept,
-                    cache_dir=vector_cache_dir,
-                    baseline_words=baseline_words,
-                    prompt_template=config.prompt_template,
-                    baseline_sample_size=config.baseline_sample_size,
-                    rng=rng,
-                )
+            model_id = getattr(adapter.model.config, "_name_or_path", "unknown")
+            cache_dir = vector_cache_dir or "results/vectors"
+
+            if config.rebuild_vectors:
+                cache_file = cache_path(model_id, layer_idx, concept, cache_dir=cache_dir)
+                cache_file.unlink(missing_ok=True)
+                cache_file.with_suffix(".json").unlink(missing_ok=True)
+
+            vector = ensure_vector(
+                adapter=adapter,
+                model_id=model_id,
+                layer_idx=layer_idx,
+                word=concept,
+                cache_dir=cache_dir,
+                baseline_words=baseline_words,
+                prompt_template=config.prompt_template,
+                baseline_sample_size=config.baseline_sample_size,
+                rng=rng,
+            )
 
             for alpha in config.alphas:
                 spec = InjectionSpec(
