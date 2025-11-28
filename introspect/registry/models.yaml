@@ -11,6 +11,10 @@ models:
     adapter: LlamaAdapter
     dtype: bf16
     context_len: 8192
+  - id: meta-llama/Llama-2-7b-chat-hf
+    adapter: LlamaAdapter
+    dtype: bf16
+    context_len: 4096
   - id: mistralai/Mistral-7B-Instruct-v0.2
     adapter: MistralAdapter
   - id: tiiuae/falcon-7b
