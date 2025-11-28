@@ -1,7 +1,7 @@
 {
-  "model": "meta-llama/Llama-2-7b-chat-hf",
+  "model": "Qwen/Qwen2.5-7B-Instruct",
   "layers": {
-    "19": {
+    "16": {
       "accuracy": 0.5,
       "auroc": 0.5,
       "tpr": 0.0,
@@ -10,7 +10,7 @@
       "n_train": 70,
       "n_test": 30
     },
-    "21": {
+    "18": {
       "accuracy": 0.5,
       "auroc": 0.5,
       "tpr": 0.0,
@@ -19,7 +19,7 @@
       "n_train": 70,
       "n_test": 30
     },
-    "23": {
+    "20": {
       "accuracy": 0.5,
       "auroc": 0.5,
       "tpr": 0.0,
@@ -30,7 +30,7 @@
     }
   },
   "recommendation": "NO_SIGNAL",
-  "best_layer": 19,
+  "best_layer": 16,
   "best_accuracy": 0.5,
   "message": "Probe achieves only 50.0% accuracy (near chance). No detectable signal."
 }
