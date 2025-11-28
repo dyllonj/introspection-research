@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+import logging
 from typing import Any, Mapping, MutableMapping, TYPE_CHECKING
 
 import torch
@@ -14,6 +15,8 @@ from transformers.generation.stopping_criteria import (
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type hints only
     from .adapters.base import BaseModelAdapter
+
+LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_GENERATION_KWARGS",
@@ -143,11 +146,21 @@ def build_chat_prompt(
     has_template = hasattr(tokenizer, "chat_template") and tokenizer.chat_template is not None
 
     if has_method and has_template:
-        prompt = tokenizer.apply_chat_template(  # type: ignore[call-arg]
-            normalised,
-            tokenize=False,
-            add_generation_prompt=add_generation_prompt,
-        )
+        try:
+            prompt = tokenizer.apply_chat_template(  # type: ignore[call-arg]
+                normalised,
+                tokenize=False,
+                add_generation_prompt=add_generation_prompt,
+            )
+        except Exception as exc:  # pragma: no cover - fall back on template errors
+            LOGGER.warning(
+                "Falling back to built-in chat rendering due to chat template error: %s",
+                exc,
+            )
+            prompt = _render_chat_fallback(
+                normalised,
+                add_generation_prompt=add_generation_prompt,
+            )
         if not isinstance(prompt, str):  # pragma: no cover - defensive
             raise TypeError("Tokenizer.apply_chat_template must return a string")
     else:
