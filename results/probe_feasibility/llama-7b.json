@@ -1,0 +1,36 @@
+{
+  "model": "meta-llama/Llama-2-7b-chat-hf",
+  "layers": {
+    "19": {
+      "accuracy": 0.5,
+      "auroc": 0.5,
+      "tpr": 1.0,
+      "fpr": 1.0,
+      "f1": 0.6666666666666666,
+      "n_train": 42,
+      "n_test": 18
+    },
+    "21": {
+      "accuracy": 0.5,
+      "auroc": 0.5,
+      "tpr": 0.0,
+      "fpr": 0.0,
+      "f1": 0.0,
+      "n_train": 42,
+      "n_test": 18
+    },
+    "23": {
+      "accuracy": 0.5,
+      "auroc": 0.5,
+      "tpr": 0.0,
+      "fpr": 0.0,
+      "f1": 0.0,
+      "n_train": 42,
+      "n_test": 18
+    }
+  },
+  "recommendation": "NO_SIGNAL",
+  "best_layer": 19,
+  "best_accuracy": 0.5,
+  "message": "Probe achieves only 50.0% accuracy (near chance). No detectable signal."
+}
