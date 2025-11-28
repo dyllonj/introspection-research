@@ -26,24 +26,31 @@ LOGGER = logging.getLogger(__name__)
 def _capture_activations(
     adapter,
     prompt: str,
-    layer_idx: int,
+    inject_layer: int,
+    capture_layer: int,
     spec: InjectionSpec | None,
     enable_injection: bool,
 ) -> torch.Tensor:
-    """Capture mean-pooled activations at a layer during a forward pass."""
+    """Capture activations downstream of an injection.
+
+    Hooks are ordered so the injection fires before the capture hook. Captures
+    the last-token residual to emphasise accumulated signal rather than
+    mean-pooled values that can wash out the effect.
+    """
 
     captured: list[torch.Tensor] = []
 
     def hook_fn(_module, _inputs, output):
         residual = output[0] if isinstance(output, tuple) else output
-        mean_act = residual.mean(dim=1).squeeze(0).detach().cpu()
-        captured.append(mean_act)
+        last_token = residual[0, -1, :].detach().cpu()
+        captured.append(last_token)
         return output
 
-    capture_handle = adapter.register_residual_hook(layer_idx, hook_fn)
     inject_handle = None
     if enable_injection and spec is not None:
         inject_handle = attach_injection(adapter, spec)
+
+    capture_handle = adapter.register_residual_hook(capture_layer, hook_fn)
 
     try:
         tokenized = adapter.tokenizer(prompt, return_tensors="pt")
@@ -116,7 +123,12 @@ def run_probe_analysis(
     best_layer = layers[0]
 
     for layer_idx in layers:
-        LOGGER.info("Collecting activations at layer %d...", layer_idx)
+        capture_layer = min(layer_idx + 4, n_layers - 1)
+        LOGGER.info(
+            "Collecting activations at inject layer %d, capture layer %d...",
+            layer_idx,
+            capture_layer,
+        )
 
         activations = []
         labels = []
@@ -143,13 +155,23 @@ def run_probe_analysis(
             )
 
             act_inject = _capture_activations(
-                adapter, prompt, layer_idx, spec, enable_injection=True
+                adapter,
+                prompt,
+                inject_layer=layer_idx,
+                capture_layer=capture_layer,
+                spec=spec,
+                enable_injection=True,
             )
             activations.append(act_inject)
             labels.append(1)
 
             act_control = _capture_activations(
-                adapter, prompt, layer_idx, spec, enable_injection=False
+                adapter,
+                prompt,
+                inject_layer=layer_idx,
+                capture_layer=capture_layer,
+                spec=spec,
+                enable_injection=False,
             )
             activations.append(act_control)
             labels.append(0)
