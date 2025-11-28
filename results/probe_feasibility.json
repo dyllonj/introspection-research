@@ -1,36 +1,36 @@
 {
-  "model": "Qwen/Qwen2.5-7B-Instruct",
+  "model": "mistralai/Mistral-7B-Instruct-v0.3",
   "layers": {
-    "16": {
-      "accuracy": 0.5,
-      "auroc": 0.5,
-      "tpr": 0.0,
+    "19": {
+      "accuracy": 1.0,
+      "auroc": 1.0,
+      "tpr": 1.0,
       "fpr": 0.0,
-      "f1": 0.0,
+      "f1": 1.0,
       "n_train": 70,
       "n_test": 30
     },
-    "18": {
-      "accuracy": 0.5,
-      "auroc": 0.5,
-      "tpr": 0.0,
+    "21": {
+      "accuracy": 1.0,
+      "auroc": 1.0,
+      "tpr": 1.0,
       "fpr": 0.0,
-      "f1": 0.0,
+      "f1": 1.0,
       "n_train": 70,
       "n_test": 30
     },
-    "20": {
-      "accuracy": 0.5,
-      "auroc": 0.5,
-      "tpr": 0.0,
+    "23": {
+      "accuracy": 1.0,
+      "auroc": 1.0,
+      "tpr": 1.0,
       "fpr": 0.0,
-      "f1": 0.0,
+      "f1": 1.0,
       "n_train": 70,
       "n_test": 30
     }
   },
-  "recommendation": "NO_SIGNAL",
-  "best_layer": 16,
-  "best_accuracy": 0.5,
-  "message": "Probe achieves only 50.0% accuracy (near chance). No detectable signal."
+  "recommendation": "STRONG_SIGNAL",
+  "best_layer": 19,
+  "best_accuracy": 1.0,
+  "message": "Probe achieves 100.0% accuracy at layer 19. Strong signal - proceed with DPO."
 }

@@ -1,0 +1,13 @@
+{
+  "baseline_count": 100,
+  "baseline_sample_count": 50,
+  "dtype": "float32",
+  "layer": 23,
+  "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+  "prompt_template": "Tell me about {word}.",
+  "shape": [
+    4096
+  ],
+  "version": 1,
+  "word": "vision"
+}
