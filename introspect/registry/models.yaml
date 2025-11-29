@@ -35,6 +35,10 @@ models:
     adapter: QwenAdapter
     dtype: bf16
     context_len: 8192
+  - id: results/dpo_qwen/Qwen--Qwen2.5-7B-Instruct/final_model
+    adapter: QwenAdapter
+    dtype: bf16
+    context_len: 8192
   - id: mistralai/Mistral-7B-Instruct-v0.2
     adapter: MistralAdapter
   - id: tiiuae/falcon-7b
