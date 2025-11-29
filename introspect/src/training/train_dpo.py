@@ -45,6 +45,7 @@ class DPOTrainingConfig:
     # Held-out concepts
     holdout_concepts: list[str] | None = None
     holdout_count: int = 0
+    data_path: Path | None = None
 
     # Training
     output_dir: Path = Path("results/introspection_dpo")
@@ -90,6 +91,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--holdout-concepts", type=Path, help="Path to line-delimited holdout concept list")
     parser.add_argument("--holdout-count", type=int, default=0, help="Sample this many concepts for holdout")
+    parser.add_argument(
+        "--data-path",
+        type=Path,
+        help="Use an existing preference dataset (json/jsonl/parquet) and skip data generation",
+    )
 
     parser.add_argument("--output-dir", type=Path, default=Path("results/introspection_dpo"))
     parser.add_argument("--num-epochs", type=int, default=3)
@@ -135,6 +141,7 @@ def _parse_config(argv: Sequence[str] | None = None) -> DPOTrainingConfig:
         rebuild_vectors=args.rebuild_vectors,
         holdout_concepts=holdout_concepts,
         holdout_count=args.holdout_count,
+        data_path=args.data_path,
         output_dir=args.output_dir,
         num_train_epochs=args.num_epochs,
         per_device_train_batch_size=args.batch_size,
@@ -349,7 +356,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         except ImportError as exc:
             LOGGER.warning("Probe feasibility skipped (dependency missing): %s", exc)
 
-    data_path, _holdout = run_data_generation(config)
+    if config.data_path is not None:
+        data_path = config.data_path
+        if not data_path.exists():
+            raise FileNotFoundError(f"--data-path {data_path} does not exist")
+        LOGGER.info("Using existing preference data from %s", data_path)
+    else:
+        data_path, _holdout = run_data_generation(config)
 
     if config.generate_only:
         LOGGER.info("Data generation complete. Exiting (--generate-only).")
