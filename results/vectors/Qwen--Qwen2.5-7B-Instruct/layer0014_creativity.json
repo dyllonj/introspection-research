@@ -1,0 +1,13 @@
+{
+  "baseline_count": 100,
+  "baseline_sample_count": 50,
+  "dtype": "float32",
+  "layer": 14,
+  "model_id": "Qwen/Qwen2.5-7B-Instruct",
+  "prompt_template": "Tell me about {word}.",
+  "shape": [
+    3584
+  ],
+  "version": 1,
+  "word": "creativity"
+}
