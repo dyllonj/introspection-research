@@ -15,6 +15,12 @@ introspect/
 ├─ concepts/words.yaml      # target & baseline concept vocabularies
 ├─ src/
 │  ├─ adapters/             # Base protocol + concrete Llama/Mistral/Falcon/NeoX/Qwen implementations
+│  ├─ training/
+│  │  ├─ introspection_head.py  # Two-head MLP for detection + concept classification
+│  │  ├─ train_supervised.py    # Supervised training with explicit concept labels
+│  │  ├─ train_dpo.py           # DPO preference learning (legacy)
+│  │  ├─ evaluate_introspection.py  # Behavioral + head evaluation
+│  │  └─ probe_feasibility.py   # Linear separability check
 │  ├─ vectors.py            # concept vector builder, caching helpers, CLI
 │  ├─ hooks.py, inject.py   # residual hook registration + injection runtime
 │  ├─ eval_common.py        # registry loading, config parsing, vector reuse
@@ -23,6 +29,8 @@ introspect/
 │  ├─ sweep.py              # multi-model/task orchestrator & plotting trigger
 │  └─ plotting.py           # Task A–D visualisations saved per model
 ├─ results/                 # cached vectors, task logs, aggregate plots
+├─ configs/
+│  └─ supervised_config.yaml    # Supervised training defaults
 └─ tests/                   # unit + smoke coverage for adapters, vectors, tasks
 ```
 
@@ -63,15 +71,96 @@ introspect/
 - **CLI configuration files:** All CLIs support `--config`, `--config-dir`, and `--config-name` for Hydra/YAML overrides.
 - **Vector cache:** Concept vectors are stored as `.npy` files beneath `introspect/results/vectors/<model>/layer####_<word>.npy` with cached metadata.
 
-## Optional Phase‑2: introspection fine-tuning (DPO)
-- **Probe before you train.** Check that injection is linearly separable with a simple probe: `python -m introspect.src.training.probe_feasibility --model <model> --n-concepts 20 --injection-mode prefix`.
-- **Deterministic concept split.** Reserve held-out concepts once and reuse: `python -m introspect.src.training.split_concepts --n-holdout 10 --seed 42 --output results/concept_split.json`.
-- **Generate preference data.** Uses Task A signals to build chosen/rejected pairs: `python -m introspect.src.training.train_dpo --model <model> --generate-only --injection-mode prefix --holdout-concepts results/concept_split.json`.
-- **Run DPO (LoRA by default).** `python -m introspect.src.training.train_dpo --model <model> --injection-mode prefix --output-dir results/introspection_dpo/<model>/`.
-- **Evaluate on held-out concepts.** `python -m introspect.src.training.evaluate_introspection --model results/introspection_dpo/<model>/final_model --holdout-list results/concept_split.json --injection-mode prefix`.
-- **Anchoring modes.** `--injection-mode prefix` injects on the assistant prefix (paper-faithful), while `--injection-mode suffix` attaches the vector to generated tokens; both rely on `resolve_injection_positions` to anchor spans via the chat template.
-- **Task results:** Evaluation scripts default to `introspect/results/task_*.jsonl`; the sweep utility nests outputs under `results/<model_slug>/task_X.jsonl` and creates `plots/` subfolders.
-- **Plots:** `introspect/src/plotting.py` produces Task A heatmaps, Task B/C bar charts, and Task D activation curves saved as PNG/SVG files.
+## Phase 2: Introspection Fine-Tuning
+
+Two training approaches are available for enhancing behavioral introspection:
+
+### Supervised Introspection Head (Recommended)
+
+The supervised approach trains an explicit classification head on captured activations, providing direct (activation → concept) supervision rather than relying on output preferences.
+
+**Why this works better than DPO:** DPO trains the model to prefer certain output patterns but never shows it *which activations* correspond to which concepts. The supervised head learns this mapping explicitly, then (optionally) joint-trains with the LLM to enable verbal reporting.
+
+#### Phase 1: Head-Only Training (Frozen LLM)
+```bash
+# Quick sanity check (~5 min)
+python -m introspect.src.training.train_supervised \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --phase head_only \
+  --n-concepts 5 \
+  --samples-per-concept 2 \
+  --epochs 1 \
+  --layers 16
+
+# Full training (~30-60 min depending on GPU)
+python -m introspect.src.training.train_supervised \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --phase head_only \
+  --n-concepts 50 \
+  --samples-per-concept 10 \
+  --epochs 10 \
+  --layers 14 16 18 20 \
+  --output-dir results/supervised
+```
+
+**Success criteria before proceeding to Phase 2:**
+- Detection accuracy ≥ 95%
+- Concept accuracy ≥ 80%
+
+#### Phase 2: Joint Training (Head + LoRA)
+
+Only proceed if Phase 1 meets the success criteria:
+```bash
+python -m introspect.src.training.train_supervised \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --phase joint \
+  --head-checkpoint results/supervised/head_only/best/introspection_head \
+  --n-concepts 50 \
+  --epochs 5 \
+  --layers 16 \
+  --output-dir results/supervised
+```
+
+#### Evaluate Head Checkpoint
+```bash
+python -m introspect.src.training.evaluate_introspection \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --head-checkpoint results/supervised/head_only/best/introspection_head \
+  --n-concepts 30 \
+  --layers 14 16 18
+```
+
+### DPO Fine-Tuning (Legacy/Comparison)
+
+The original DPO approach trains on output preferences without explicit activation labels. Included for comparison but generally underperforms supervised training.
+```bash
+# Probe feasibility check
+python -m introspect.src.training.probe_feasibility \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --n-concepts 20 \
+  --injection-mode prefix
+
+# Generate preference data + train
+python -m introspect.src.training.train_dpo \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --injection-mode prefix \
+  --output-dir results/introspection_dpo
+
+# Evaluate
+python -m introspect.src.training.evaluate_introspection \
+  --model results/introspection_dpo/final_model \
+  --model-b Qwen/Qwen2.5-7B-Instruct \
+  --injection-mode prefix
+```
+
+### Key Architectural Insight
+
+Our experiments revealed a **probe-behavior gap**: external probes achieve 100% accuracy detecting injected activations, but models cannot verbally report this information (0.56% TPR with DPO). The supervised approach addresses this by:
+
+1. Training an explicit classification head on the activations (matches probe accuracy)
+2. Optionally fusing classification output back into generation via joint training
+
+See `introspect/configs/supervised_config.yaml` for full configuration options.
 
 ## Verified CLI workflow
 All commands run from the repository root with the virtual environment active.
@@ -224,6 +313,7 @@ Replace the model list with any identifiers present in the results directory. Th
 - **Testing:** Run `pytest` for unit/smoke coverage and `ruff check .` to enforce style before submitting changes.
 
 ## FAQ / troubleshooting
+- **Why use supervised training instead of DPO?** DPO trains output preferences but doesn't show the model which internal signals to attend to. We observe 100% probe accuracy yet only 0.56% behavioral detection with DPO—supervised training adds explicit (activation → concept) labels to close this gap.
 - **Why do runs switch to float32 on CPU?** When GPUs are unavailable, adapters request `float32` automatically to maintain numerical stability.
 - **How do I handle large model downloads?** Configure Hugging Face cache directories (`HF_HOME`, `TRANSFORMERS_CACHE`) to point at storage with sufficient space.
 - **Deterministic decoding still differs across machines.** Verify matching torch/transformers versions, and ensure CUDA/cuDNN allow deterministic kernels; otherwise rerun with `--non-deterministic` disabled and check logs for warnings.
