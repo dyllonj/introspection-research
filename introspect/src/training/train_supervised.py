@@ -163,18 +163,18 @@ def collate_fn(batch: list[dict], pad_token_id: int) -> dict:
     max_len = max(item["input_ids"].shape[0] for item in batch)
     max_full_len = max(item["full_input_ids"].shape[0] for item in batch)
 
-    def _pad_tensor(tensor: torch.Tensor, target_len: int) -> torch.Tensor:
+    def _pad_ids(tensor: torch.Tensor, target_len: int, pad_value: int) -> torch.Tensor:
         pad_len = target_len - tensor.shape[0]
         if pad_len <= 0:
             return tensor
-        return torch.nn.functional.pad(tensor, (0, pad_len), value=pad_token_id)
+        return torch.nn.functional.pad(tensor, (0, pad_len), value=pad_value)
 
     return {
-        "input_ids": torch.stack([_pad_tensor(item["input_ids"], max_len) for item in batch]),
-        "attention_mask": torch.stack([_pad_tensor(item["attention_mask"], max_len) for item in batch]),
-        "full_input_ids": torch.stack([_pad_tensor(item["full_input_ids"], max_full_len) for item in batch]),
+        "input_ids": torch.stack([_pad_ids(item["input_ids"], max_len, pad_token_id) for item in batch]),
+        "attention_mask": torch.stack([_pad_ids(item["attention_mask"], max_len, 0) for item in batch]),
+        "full_input_ids": torch.stack([_pad_ids(item["full_input_ids"], max_full_len, pad_token_id) for item in batch]),
         "full_attention_mask": torch.stack(
-            [_pad_tensor(item["full_attention_mask"], max_full_len) for item in batch]
+            [_pad_ids(item["full_attention_mask"], max_full_len, 0) for item in batch]
         ),
         "concept_id": torch.tensor([item["concept_id"] for item in batch]),
         "is_injection": torch.tensor([item["is_injection"] for item in batch]),

@@ -373,14 +373,14 @@ def _capture_activations_at_layer(
     *,
     enable_injection: bool,
 ) -> torch.Tensor:
-    """Capture mean activations at a specific layer during a forward pass."""
+    """Capture last-token activations at a specific layer during a forward pass."""
 
     captured: list[torch.Tensor] = []
 
     def hook_fn(_module: torch.nn.Module, _inputs: tuple[torch.Tensor, ...], output: torch.Tensor):
         residual = output[0] if isinstance(output, tuple) else output
-        mean_activation = residual.mean(dim=1).squeeze(0)
-        captured.append(mean_activation.detach().cpu())
+        last_token_activation = residual[0, -1, :].detach().cpu()
+        captured.append(last_token_activation)
         return output
 
     capture_handle = adapter.register_residual_hook(capture_layer, hook_fn)
