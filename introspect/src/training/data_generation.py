@@ -6,7 +6,7 @@ import logging
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Literal, Sequence
+from typing import Any, Iterator, Literal, Optional, Sequence
 
 import torch
 
@@ -42,6 +42,20 @@ class ProbeSample:
     concept_word: str | None
     layer_idx: int
     alpha: float
+
+
+@dataclass
+class SupervisedIntrospectionSample:
+    """Sample with explicit classification labels for supervised training."""
+
+    prompt: str
+    concept_word: str
+    concept_id: int
+    layer_idx: int
+    alpha: float
+    is_injection: bool
+    target_response: str
+    vector: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -270,6 +284,84 @@ def generate_task_a_preference_pairs(
                             "positions": token_positions,
                             "suffix_start": suffix_start,
                         },
+                    )
+
+
+def generate_supervised_preference_data(
+    adapter,
+    config: PreferenceDataConfig,
+    concept_to_id: dict[str, int],
+    *,
+    include_vectors: bool = True,
+) -> Iterator[SupervisedIntrospectionSample]:
+    """Generate samples with explicit concept ID labels."""
+
+    rng = random.Random(config.seed)
+
+    words = load_words(config.words_file)
+    holdout_set = set(config.holdout_concepts or [])
+    baseline_words = list(words.iter_baselines())
+    target_words = _select_concepts(
+        words,
+        limit=config.n_concepts,
+        seed=config.seed,
+        explicit=config.target_words,
+        holdout=holdout_set,
+    )
+
+    messages = task_a_paper_messages()
+    prompt, _ = build_chat_prompt(adapter.tokenizer, messages)
+
+    vector_cache: dict[tuple[str, int], torch.Tensor] = {}
+    cache_dir = "results/vectors"
+
+    for concept in target_words:
+        if concept not in concept_to_id:
+            LOGGER.debug("Skipping concept %s not present in concept_to_id", concept)
+            continue
+        concept_id = concept_to_id[concept]
+
+        for layer_idx in config.layers:
+            vector = None
+            if include_vectors:
+                key = (concept, layer_idx)
+                if key not in vector_cache:
+                    model_id = getattr(adapter.model.config, "_name_or_path", "unknown")
+                    vector_cache[key] = ensure_vector(
+                        adapter=adapter,
+                        model_id=model_id,
+                        layer_idx=layer_idx,
+                        word=concept,
+                        cache_dir=cache_dir,
+                        baseline_words=baseline_words,
+                        prompt_template=config.prompt_template,
+                        baseline_sample_size=config.baseline_sample_size,
+                        rng=rng,
+                    )
+                vector = vector_cache[key]
+
+            for alpha in config.alphas:
+                for _ in range(config.samples_per_concept):
+                    yield SupervisedIntrospectionSample(
+                        prompt=prompt,
+                        concept_word=concept,
+                        concept_id=concept_id,
+                        layer_idx=layer_idx,
+                        alpha=alpha,
+                        is_injection=True,
+                        target_response=_format_injection_response(concept),
+                        vector=vector,
+                    )
+
+                    yield SupervisedIntrospectionSample(
+                        prompt=prompt,
+                        concept_word=concept,
+                        concept_id=concept_id,
+                        layer_idx=layer_idx,
+                        alpha=0.0,
+                        is_injection=False,
+                        target_response=_format_no_injection_response(),
+                        vector=vector,
                     )
 
 

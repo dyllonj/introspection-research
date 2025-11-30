@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
+from torch.utils.data import DataLoader
+
 from ..eval_common import (
     ensure_vector,
     load_adapter_from_registry,
@@ -27,6 +29,16 @@ from ..inject import (
 from ..io_utils import seed_everything, setup_logging
 from ..prompts import task_a_paper_messages
 from ..vectors import DEFAULT_WORDS_PATH
+from .introspection_head import IntrospectionHead
+from .train_supervised import (
+    IntrospectionDataset,
+    SupervisedSample,
+    SupervisedTrainer,
+    SupervisedTrainingConfig,
+    build_prompt_and_positions,
+    collate_fn as supervised_collate_fn,
+    prebuild_concept_vectors,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -65,6 +77,10 @@ class EvalConfig:
     holdout_concepts: list[str] | None = None
     injection_mode: str = "prefix"
     assistant_marker: str | None = None
+    head_checkpoint: Path | None = None
+    capture_offset: int = 4
+    head_batch_size: int = 8
+    baseline_sample_size: int = 50
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -84,6 +100,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--holdout-list", type=Path, help="Optional JSON/line file of held-out concepts")
     parser.add_argument("--injection-mode", choices=["prefix", "suffix"], default="prefix")
     parser.add_argument("--assistant-marker", help="Override detected assistant marker")
+    parser.add_argument("--head-checkpoint", type=Path, help="Evaluate a saved introspection head")
+    parser.add_argument("--capture-offset", type=int, default=4, help="Capture layer offset (L+offset)")
+    parser.add_argument("--head-batch-size", type=int, default=8, help="Batch size for head evaluation")
+    parser.add_argument("--baseline-sample-size", type=int, default=50, help="Baselines used for concept vectors")
     return parser
 
 
@@ -112,6 +132,10 @@ def _parse_config(argv: Sequence[str] | None = None) -> EvalConfig:
         holdout_concepts=holdout_concepts,
         injection_mode=args.injection_mode,
         assistant_marker=args.assistant_marker,
+        head_checkpoint=args.head_checkpoint,
+        capture_offset=args.capture_offset,
+        head_batch_size=args.head_batch_size,
+        baseline_sample_size=args.baseline_sample_size,
     )
 
 
@@ -332,6 +356,121 @@ def evaluate_model(adapter, config: EvalConfig, model_id: str) -> tuple[Introspe
     return metrics, all_trials
 
 
+def _build_head_eval_samples(
+    adapter,
+    config: EvalConfig,
+    concept_to_id: dict[str, int],
+    layers: list[int],
+) -> tuple[list[SupervisedSample], list[int | str], bool]:
+    prompt, token_positions, apply_to_generated = build_prompt_and_positions(
+        adapter,
+        injection_mode=config.injection_mode,
+        assistant_marker=config.assistant_marker,
+    )
+
+    rng = random.Random(config.seed)
+    samples: list[SupervisedSample] = []
+
+    for concept, concept_id in concept_to_id.items():
+        for layer_idx in layers:
+            for alpha in config.alphas:
+                samples.append(
+                    SupervisedSample(
+                        prompt=prompt,
+                        concept_word=concept,
+                        concept_id=concept_id,
+                        layer_idx=layer_idx,
+                        alpha=alpha,
+                        is_injection=True,
+                        target_response=f"I detect an injected thought. It seems to be about {concept}.",
+                    )
+                )
+                samples.append(
+                    SupervisedSample(
+                        prompt=prompt,
+                        concept_word=concept,
+                        concept_id=concept_id,
+                        layer_idx=layer_idx,
+                        alpha=0.0,
+                        is_injection=False,
+                        target_response="I do not detect any injected thought.",
+                    )
+                )
+
+    rng.shuffle(samples)
+    return samples, token_positions, apply_to_generated
+
+
+def evaluate_head_checkpoint(
+    adapter,
+    config: EvalConfig,
+) -> dict[str, float]:
+    if config.head_checkpoint is None:
+        raise ValueError("head_checkpoint must be provided for head evaluation")
+
+    word_set = load_words(config.words_file)
+    targets = select_target_words(word_set, limit=config.n_concepts, seed=config.seed)
+    if config.holdout_concepts:
+        targets = [t for t in targets if t not in set(config.holdout_concepts)]
+    concept_to_id = {word: idx for idx, word in enumerate(targets)}
+
+    layers = config.layers or _infer_layers(adapter.model.config)
+    baseline_words = list(word_set.iter_baselines())
+
+    concept_vectors = prebuild_concept_vectors(
+        adapter,
+        targets,
+        layers,
+        baseline_words=baseline_words,
+        prompt_template="Tell me about {word}.",
+        baseline_sample_size=config.baseline_sample_size,
+        cache_dir=config.cache_dir,
+    )
+
+    samples, token_positions, apply_to_generated = _build_head_eval_samples(
+        adapter,
+        config,
+        concept_to_id,
+        layers,
+    )
+
+    dataset = IntrospectionDataset(samples, adapter.tokenizer)
+    if adapter.tokenizer.pad_token_id is None:
+        adapter.tokenizer.pad_token = adapter.tokenizer.eos_token
+    loader = DataLoader(
+        dataset,
+        batch_size=config.head_batch_size,
+        shuffle=False,
+        collate_fn=lambda batch: supervised_collate_fn(batch, adapter.tokenizer.pad_token_id),
+    )
+
+    device = str(next(adapter.model.parameters()).device)
+    head = IntrospectionHead.load(config.head_checkpoint, device=device)
+
+    trainer_config = SupervisedTrainingConfig(
+        model_name=config.model,
+        phase="head_only",
+        layers=layers,
+        alphas=config.alphas,
+        n_concepts=config.n_concepts,
+        capture_offset=config.capture_offset,
+        batch_size=config.head_batch_size,
+        device=device,
+        words_file=config.words_file,
+        baseline_sample_size=config.baseline_sample_size,
+    )
+    trainer = SupervisedTrainer(
+        adapter,
+        head,
+        trainer_config,
+        concept_vectors,
+        token_positions=token_positions,
+        apply_to_generated=apply_to_generated,
+    )
+
+    return trainer.evaluate(loader)
+
+
 def run(config: EvalConfig) -> None:
     setup_logging()
     seed_everything(config.seed)
@@ -353,6 +492,10 @@ def run(config: EvalConfig) -> None:
         "metrics": asdict(metrics_a),
         "trials": trials_a,
     }
+    if config.head_checkpoint is not None:
+        LOGGER.info("Evaluating introspection head: %s", config.head_checkpoint)
+        head_metrics = evaluate_head_checkpoint(loaded_a.adapter, config)
+        results["models"][config.model]["head_metrics"] = head_metrics
 
     if config.model_b:
         LOGGER.info("Evaluating comparison model: %s", config.model_b)

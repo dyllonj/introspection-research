@@ -1,0 +1,53 @@
+# Supervised Introspection Training Configuration
+
+# Model
+model_name: "Qwen/Qwen2.5-7B-Instruct"
+
+# Training phase: "head_only" for Phase 1, "joint" for Phase 2
+phase: "head_only"
+
+# Injection settings
+layers: [14, 16, 18, 20]  # Wider sweep than DPO
+alphas: [1.0, 2.0, 4.0, 8.0]  # More alpha values
+capture_offset: 4
+
+# Data
+n_concepts: 50
+samples_per_concept: 20  # 5x more than DPO
+baseline_sample_size: 50
+
+# Head architecture
+head_intermediate_size: null  # Will default to hidden_size // 2
+head_dropout: 0.1
+
+# Training
+batch_size: 16
+num_epochs: 20
+warmup_steps: 200
+weight_decay: 0.01
+
+# Learning rates
+head_lr: 1e-3  # Aggressive for head
+learning_rate: 1e-5  # Conservative for LLM (joint training only)
+
+# Loss weights
+detection_weight: 0.3
+concept_weight: 0.7
+generation_weight: 0.5  # Only used in joint training
+
+# LoRA (for joint training)
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules:
+  - "q_proj"
+  - "v_proj"
+  - "o_proj"
+
+# Paths
+output_dir: "results/supervised"
+head_checkpoint: null  # Set to load pretrained head
+
+# Misc
+seed: 42
+device: "cuda"
